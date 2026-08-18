@@ -101,16 +101,39 @@ ask_input() {
 ask_input_secret() {
     local prompt="$1"
     local default="$2"
-    local value
-    
+    local char value=""
+
     if [ -n "$default" ]; then
         log_prompt "$prompt [****]:" >&2
     else
         log_prompt "$prompt:" >&2
     fi
-    read -s -r value >&2
-    echo "" >&2
+    while IFS= read -rs -n1 char 2>/dev/null; do
+        if [[ -z "${char}" ]]; then
+            break
+        fi
+        if [[ "${char}" == $'\177' || "${char}" == $'\010' ]]; then
+            if [[ -n "${value}" ]]; then
+                value="${value%?}"
+                printf '\b \b' >&2
+            fi
+            continue
+        fi
+        value+="${char}"
+        printf '*' >&2
+    done < /dev/tty
+    printf '\n' >&2
     echo "${value:-$default}"
+}
+
+mask_key() {
+    local key="$1"
+    local len=${#key}
+    if [ "${len}" -gt 8 ]; then
+        echo "${key:0:4}...${key: -4}"
+    else
+        echo "***"
+    fi
 }
 
 validate_llm() {
@@ -124,8 +147,9 @@ validate_llm() {
     fi
     
     log_info "Validating LLM connection..." >&2
-    log_info "  URL:   $test_url" >&2
-    log_info "  Model: $model" >&2
+    log_info "  URL:    $test_url" >&2
+    log_info "  Model:  $model" >&2
+    log_info "  APIKey: $(mask_key "${api_key}")" >&2
     
     local tmp_resp http_code body
     tmp_resp=$(mktemp /tmp/llm-validate-XXXXXX)
@@ -176,8 +200,8 @@ ask_llm_config() {
     
     echo ""
     log_info "Chat Model:"
-    model_ref=$(ask_input "  Model name (e.g., gpt-4, claude-3-opus)" "")
-    url_ref=$(ask_input "  API URL (e.g., https://api.openai.com/v1/chat/completions)" "")
+    model_ref=$(ask_input "  Model name" "")
+    url_ref=$(ask_input "  API URL" "")
     apikey_ref=$(ask_input_secret "  API Key" "")
     
     if [ -z "$model_ref" ] || [ -z "$url_ref" ] || [ -z "$apikey_ref" ]; then
@@ -204,8 +228,8 @@ ask_llm_config() {
             1)
                 echo ""
                 log_info "Chat Model:"
-                model_ref=$(ask_input "  Model name (e.g., gpt-4, claude-3-opus)" "$model_ref")
-                url_ref=$(ask_input "  API URL (e.g., https://api.openai.com/v1/chat/completions)" "$url_ref")
+                model_ref=$(ask_input "  Model name" "$model_ref")
+                url_ref=$(ask_input "  API URL" "$url_ref")
                 apikey_ref=$(ask_input_secret "  API Key" "")
                 if [ -z "$model_ref" ] || [ -z "$url_ref" ] || [ -z "$apikey_ref" ]; then
                     log_warn "LLM configuration incomplete, skipping validation."
@@ -839,10 +863,16 @@ echo "  LLM Configuration:"
 if [ "$CONFIG_REGISTRY" = true ]; then
     echo "    Registry Center:"
     echo "      Chat:   $CONFIG_REGISTRY_CHAT_MODEL"
+    if [ -n "$CONFIG_REGISTRY_CHAT_APIKEY" ]; then
+        echo "      APIKey: $(mask_key "$CONFIG_REGISTRY_CHAT_APIKEY")"
+    fi
 fi
 if [ "$CONFIG_ORCHESTRATION" = true ]; then
     echo "    Orchestration Center:"
     echo "      Chat:   $CONFIG_ORCH_CHAT_MODEL"
+    if [ -n "$CONFIG_ORCH_CHAT_APIKEY" ]; then
+        echo "      APIKey: $(mask_key "$CONFIG_ORCH_CHAT_APIKEY")"
+    fi
 fi
 
 if [ "$CONFIG_ORCHESTRATION" = true ]; then

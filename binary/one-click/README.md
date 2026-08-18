@@ -45,13 +45,13 @@ cd openan-installation/binary/one-click
 #### 2. Grant execute permission (if needed)
 
 ```bash
-chmod +x openan_install.sh openan_uninstall.sh configure_llm.sh
+chmod +x install.sh uninstall.sh configure_llm.sh
 ```
 
 #### 3. Run the script
 
 ```bash
-./openan_install.sh
+./install.sh
 ```
 
 The script handles all downloads, configuration, and service startup automatically. There are a few interactive prompts during execution (see below); everything else is fully automated.
@@ -70,11 +70,11 @@ The script uses `--reg` and `--orc` flags to select installation targets, consis
 
 ```bash
 # Examples
-./openan_install.sh                    # Install everything (default: --reg --orc)
-./openan_install.sh --reg               # Install only registry-center
-./openan_install.sh --orc               # Install only orchestration-center
-./openan_install.sh --reg --orc --sample # Install everything and start sample agents
-./openan_install.sh --help              # Show help
+./install.sh                           # Install everything (default: --reg --orc)
+./install.sh --reg                     # Install only registry-center
+./install.sh --orc                     # Install only orchestration-center
+./install.sh --reg --orc --sample      # Install everything and start sample agents
+./install.sh --help                    # Show help
 ```
 
 > In `--orc` mode (without `--reg`), the script prompts for the URL of the running registry-center (default `https://127.0.0.1:5000`). The URL is written as-is to `server.conf` and the `AGENT_REGISTRY_URL` environment variable — no `https→http` conversion.
@@ -104,8 +104,8 @@ The script uses `--reg` and `--orc` flags to select installation targets, consis
 To completely uninstall OpenAN (stop all processes, clean nginx configuration, remove project directories), use the uninstall script:
 
 ```bash
-./openan_uninstall.sh           # Interactive confirmation
-./openan_uninstall.sh --force   # Skip confirmation (for automation)
+./uninstall.sh                  # Interactive confirmation
+./uninstall.sh --force          # Skip confirmation (for automation)
 ```
 
 > The uninstall script **preserves environment tools** (Python, Node.js, npm, nginx) for faster reinstallation. See [Uninstalling OpenAN](#uninstalling-openan) for details.
@@ -389,14 +389,14 @@ sudo nginx -s stop
 ### Uninstalling OpenAN
 
 To completely uninstall OpenAN projects (remove project directories, stop all processes,
-and clean nginx configuration), use the `openan_uninstall.sh` script.
+and clean nginx configuration), use the `uninstall.sh` script.
 **Environment tools (Python, Node.js, npm, nginx) are preserved** for faster reinstallation.
 
 #### Usage
 
 ```bash
-./openan_uninstall.sh           # Interactive confirmation
-./openan_uninstall.sh --force   # Skip confirmation (for automation)
+./uninstall.sh                  # Interactive confirmation
+./uninstall.sh --force          # Skip confirmation (for automation)
 ```
 
 #### What Gets Removed
@@ -421,7 +421,7 @@ The following are **not deleted**, for faster reinstallation:
 
 #### Interactive Confirmation
 
-When running `./openan_uninstall.sh`, the script first scans the system and lists all
+When running `./uninstall.sh`, the script first scans the system and lists all
 planned actions:
 
 ```

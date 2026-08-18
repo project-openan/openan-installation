@@ -7,15 +7,15 @@ System-level installation tooling for OpenAN, providing one-click binary install
 ```
 openan-installation/
 ├── binary/one-click/                # Binary installation
-│   ├── openan_install.sh            # one-click installation script
-│   ├── openan_uninstall.sh          # one-click uninstall script
+│   ├── install.sh                   # one-click installation script
+│   ├── uninstall.sh                 # one-click uninstall script
 │   ├── README.md                    # Binary installation guide
 └── containerized/                   # Containerized installation
     ├── build/                       # Image build scripts
     ├── install.sh                   # Interactive installation tool
     ├── uninstall.sh                 # One-click uninstall script
     ├── openan-chart/                # Helm chart
-    └── QUICKSTART.md                # Quick start guide
+    └── QUICKSTART.md                # Containerized installation guide
 ```
 
 ## Installation Methods
@@ -32,7 +32,7 @@ cd openan-installation/containerized
 
 **Features:**
 - Modular component selection (Registry Center, Orchestration Center, Workflow Designer)
-- Fully configurable parameters (LLM API keys, image registry, storage)
+- Fully configurable parameters by helm values(LLM API keys, image registry, storage)
 - Auto-detects cluster environment (StorageClass, Ingress Controller, LoadBalancer)
 - MetalLB auto-installation for bare-metal clusters
 - One-click uninstall with optional data cleanup
@@ -54,12 +54,13 @@ Binary-based installation for virtual machines or bare-metal servers. Downloads 
 **Linux/macOS:**
 ```bash
 cd binary/one-click
-./openan_install.sh
+./install.sh
 ```
 
 **Features:**
 - Downloads and starts all services locally (PostgreSQL, Registry, Orchestration, Frontend)
 - Automatic dependency setup (Python venvs, Node.js)
+- Modular component selection (Registry Center, Orchestration Center, Workflow Designer in nginx)
 - Ready for installation in minutes
 
 ## Uninstall
@@ -82,7 +83,7 @@ kubectl delete namespace openan
 
 ```bash
 cd binary/one-click
-./openan_uninstall.sh
+./uninstall.sh
 ```
 
 ## Upgrade

@@ -4,7 +4,7 @@
 # Removes OpenAN project files, stops services, kills processes, and cleans
 # nginx configuration. Preserves environment tools (Python, Node.js, npm, nginx).
 #
-# Usage: ./openan_uninstall.sh [--force] [-h, --help]
+# Usage: ./uninstall.sh [--force] [-h, --help]
 # See ADR-007 for design decisions.
 # =============================================================================
 set -uo pipefail
@@ -16,7 +16,7 @@ FORCE=false
 
 print_usage() {
     cat << 'USAGE_EOF'
-Usage: openan_uninstall.sh [OPTIONS]
+Usage: uninstall.sh [OPTIONS]
 
 Uninstall OpenAN projects (registry-center, orchestration-center), stop all
 services, remove nginx configuration, and kill related processes.
@@ -27,8 +27,8 @@ Options:
   -h, --help    Show this help message and exit
 
 Examples:
-  ./openan_uninstall.sh           # Interactive confirmation
-  ./openan_uninstall.sh --force   # No confirmation (for automation)
+  ./uninstall.sh           # Interactive confirmation
+  ./uninstall.sh --force   # No confirmation (for automation)
 USAGE_EOF
 }
 
@@ -464,5 +464,5 @@ if [ -d "${WORK_DIR}/.node" ]; then
 fi
 echo ""
 echo " To reinstall OpenAN:"
-echo "   ./openan_install.sh"
+echo "   ./install.sh"
 echo "=========================================="
