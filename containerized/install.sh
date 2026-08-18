@@ -101,16 +101,39 @@ ask_input() {
 ask_input_secret() {
     local prompt="$1"
     local default="$2"
-    local value
-    
+    local char value=""
+
     if [ -n "$default" ]; then
         log_prompt "$prompt [****]:" >&2
     else
         log_prompt "$prompt:" >&2
     fi
-    read -s -r value >&2
-    echo "" >&2
+    while IFS= read -rs -n1 char 2>/dev/null; do
+        if [[ -z "${char}" ]]; then
+            break
+        fi
+        if [[ "${char}" == $'\177' || "${char}" == $'\010' ]]; then
+            if [[ -n "${value}" ]]; then
+                value="${value%?}"
+                printf '\b \b' >&2
+            fi
+            continue
+        fi
+        value+="${char}"
+        printf '*' >&2
+    done < /dev/tty
+    printf '\n' >&2
     echo "${value:-$default}"
+}
+
+mask_key() {
+    local key="$1"
+    local len=${#key}
+    if [ "${len}" -gt 8 ]; then
+        echo "${key:0:4}...${key: -4}"
+    else
+        echo "***"
+    fi
 }
 
 validate_llm() {
@@ -124,8 +147,9 @@ validate_llm() {
     fi
     
     log_info "Validating LLM connection..." >&2
-    log_info "  URL:   $test_url" >&2
-    log_info "  Model: $model" >&2
+    log_info "  URL:    $test_url" >&2
+    log_info "  Model:  $model" >&2
+    log_info "  APIKey: $(mask_key "${api_key}")" >&2
     
     local tmp_resp http_code body
     tmp_resp=$(mktemp /tmp/llm-validate-XXXXXX)
@@ -839,10 +863,16 @@ echo "  LLM Configuration:"
 if [ "$CONFIG_REGISTRY" = true ]; then
     echo "    Registry Center:"
     echo "      Chat:   $CONFIG_REGISTRY_CHAT_MODEL"
+    if [ -n "$CONFIG_REGISTRY_CHAT_APIKEY" ]; then
+        echo "      APIKey: $(mask_key "$CONFIG_REGISTRY_CHAT_APIKEY")"
+    fi
 fi
 if [ "$CONFIG_ORCHESTRATION" = true ]; then
     echo "    Orchestration Center:"
     echo "      Chat:   $CONFIG_ORCH_CHAT_MODEL"
+    if [ -n "$CONFIG_ORCH_CHAT_APIKEY" ]; then
+        echo "      APIKey: $(mask_key "$CONFIG_ORCH_CHAT_APIKEY")"
+    fi
 fi
 
 if [ "$CONFIG_ORCHESTRATION" = true ]; then
