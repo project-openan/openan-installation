@@ -200,8 +200,8 @@ ask_llm_config() {
     
     echo ""
     log_info "Chat Model:"
-    model_ref=$(ask_input "  Model name (e.g., gpt-4, claude-3-opus)" "")
-    url_ref=$(ask_input "  API URL (e.g., https://api.openai.com/v1/chat/completions)" "")
+    model_ref=$(ask_input "  Model name" "")
+    url_ref=$(ask_input "  API URL" "")
     apikey_ref=$(ask_input_secret "  API Key" "")
     
     if [ -z "$model_ref" ] || [ -z "$url_ref" ] || [ -z "$apikey_ref" ]; then
@@ -228,8 +228,8 @@ ask_llm_config() {
             1)
                 echo ""
                 log_info "Chat Model:"
-                model_ref=$(ask_input "  Model name (e.g., gpt-4, claude-3-opus)" "$model_ref")
-                url_ref=$(ask_input "  API URL (e.g., https://api.openai.com/v1/chat/completions)" "$url_ref")
+                model_ref=$(ask_input "  Model name" "$model_ref")
+                url_ref=$(ask_input "  API URL" "$url_ref")
                 apikey_ref=$(ask_input_secret "  API Key" "")
                 if [ -z "$model_ref" ] || [ -z "$url_ref" ] || [ -z "$apikey_ref" ]; then
                     log_warn "LLM configuration incomplete, skipping validation."

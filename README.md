@@ -15,7 +15,7 @@ openan-installation/
     ├── install.sh                   # Interactive installation tool
     ├── uninstall.sh                 # One-click uninstall script
     ├── openan-chart/                # Helm chart
-    └── QUICKSTART.md                # Quick start guide
+    └── QUICKSTART.md                # Containerized installation guide
 ```
 
 ## Installation Methods
@@ -32,7 +32,7 @@ cd openan-installation/containerized
 
 **Features:**
 - Modular component selection (Registry Center, Orchestration Center, Workflow Designer)
-- Fully configurable parameters (LLM API keys, image registry, storage)
+- Fully configurable parameters by helm values(LLM API keys, image registry, storage)
 - Auto-detects cluster environment (StorageClass, Ingress Controller, LoadBalancer)
 - MetalLB auto-installation for bare-metal clusters
 - One-click uninstall with optional data cleanup
@@ -60,6 +60,7 @@ cd binary/one-click
 **Features:**
 - Downloads and starts all services locally (PostgreSQL, Registry, Orchestration, Frontend)
 - Automatic dependency setup (Python venvs, Node.js)
+- Modular component selection (Registry Center, Orchestration Center, Workflow Designer in nginx)
 - Ready for installation in minutes
 
 ## Uninstall
