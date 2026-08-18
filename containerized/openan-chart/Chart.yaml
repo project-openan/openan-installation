@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v2
+name: openan
+description: OpenAN Platform - Registry Center and Orchestration Center
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - a2a
+  - agent
+  - orchestration
+  - registry
+maintainers:
+  - name: OpenAN Team

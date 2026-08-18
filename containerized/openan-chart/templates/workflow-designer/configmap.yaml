@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workflow-designer-nginx-config
+  labels:
+    app: workflow-designer
+data:
+  default.conf: |
+{{ .Values.frontend.nginxConfig | indent 4 }}

@@ -1,0 +1,49 @@
+{{- if and .Values.postgresql.enabled .Values.postgresql.storage.createStorageClass }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.postgresql.storage.storageClassName | default "openan-local" }}
+  labels:
+    {{- include "openan.postgres.labels" . | nindent 4 }}
+  {{- if .Values.postgresql.storage.setDefault }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  {{- end }}
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: {{ .Values.postgresql.storage.reclaimPolicy | default "Retain" }}
+{{- end }}
+---
+{{- if and .Values.postgresql.enabled .Values.postgresql.storage.createPV }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.postgresql.storage.pvName | default "openan-postgres-pv" }}
+  labels:
+    {{- include "openan.postgres.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ .Values.postgresql.storage.size }}
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: {{ .Values.postgresql.storage.reclaimPolicy | default "Retain" }}
+  {{- if .Values.postgresql.storage.storageClassName }}
+  storageClassName: {{ .Values.postgresql.storage.storageClassName }}
+  {{- end }}
+  {{- if .Values.postgresql.storage.useHostPath }}
+  hostPath:
+    path: {{ .Values.postgresql.storage.hostPath | default "/data/openan-postgres" }}
+  {{- else }}
+  local:
+    path: {{ .Values.postgresql.storage.localPath | default "/data/openan-postgres" }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - {{ .Values.postgresql.storage.nodeName }}
+  {{- end }}
+{{- end }}

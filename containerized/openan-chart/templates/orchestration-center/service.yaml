@@ -1,0 +1,22 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.orchestration.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestration-center
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.orchestration.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "openan.orchestration.selectorLabels" . | nindent 4 }}
+  ports:
+  - port: {{ .Values.orchestration.port }}
+    targetPort: {{ .Values.orchestration.port }}
+    protocol: TCP
+    name: http
+{{- end }}

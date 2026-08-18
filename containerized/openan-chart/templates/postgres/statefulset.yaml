@@ -1,0 +1,120 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: openan-postgres
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.postgres.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "openan.postgres.selectorLabels" . | nindent 4 }}
+  ports:
+  - port: {{ .Values.postgresql.port }}
+    targetPort: {{ .Values.postgresql.port }}
+    protocol: TCP
+    name: postgres
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openan-postgres
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.postgres.labels" . | nindent 4 }}
+spec:
+  serviceName: openan-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "openan.postgres.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "openan.postgres.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: {{ .Values.postgresql.port }}
+        env:
+        - name: POSTGRES_MULTIPLE_DATABASES
+          value: "{{ range $i, $db := .Values.postgresql.databases }}{{ if $i }},{{ end }}{{ $db.name }}:{{ $db.user }}{{ end }}"
+        - name: POSTGRES_PASSWORD
+          {{- if .Values.postgresql.existingSecret }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.postgresql.existingSecret }}
+              key: postgres-password
+          {{- else }}
+          value: {{ .Values.postgresql.password | quote }}
+          {{- end }}
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 15
+          periodSeconds: 30
+        resources:
+          {{- toYaml .Values.postgresql.resources | nindent 10 }}
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+      volumes:
+      - name: init-script
+        configMap:
+          name: openan-postgres-init
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.postgresql.storage.size }}
+      {{- if .Values.postgresql.storage.storageClassName }}
+      storageClassName: {{ .Values.postgresql.storage.storageClassName }}
+      {{- end }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openan-postgres-init
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.postgres.labels" . | nindent 4 }}
+data:
+  create-databases.sh: |
+    #!/bin/bash
+    set -e
+    {{ range .Values.postgresql.databases }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<EOSQL
+    CREATE USER {{ .user }} WITH PASSWORD '${POSTGRES_PASSWORD}';
+    CREATE DATABASE {{ .name }} OWNER {{ .user }};
+    GRANT ALL PRIVILEGES ON DATABASE {{ .name }} TO {{ .user }};
+    EOSQL
+    {{ end }}
+{{- end }}

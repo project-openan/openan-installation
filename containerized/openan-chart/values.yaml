@@ -1,0 +1,289 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# OpenAN Platform Configuration
+# =============================================================================
+
+# Global settings
+namespace: openan
+# Set to false if namespace already exists or managed externally
+createNamespace: true
+
+# =============================================================================
+# PostgreSQL Configuration (Shared)
+# =============================================================================
+postgresql:
+  # Set to false to use external database
+  enabled: true
+  # External database settings (when enabled=false)
+  externalHost: ""
+  port: 5432
+  # Database credentials
+  # Use existingSecret to reference an existing K8S secret instead of defining password here
+  existingSecret: ""
+  password: "openan-db-password"
+  # Storage
+  storage: 
+    size: 20Gi
+    storageClassName: ""
+    createStorageClass: false
+    createPV: false
+    useHostPath: false
+    hostPath: "/data/openan-postgres"
+    localPath: "/data/openan-postgres"
+    nodeName: ""
+    reclaimPolicy: "Retain"
+    setDefault: false
+    pvName: "openan-postgres-pv"
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Database definitions
+  databases:
+    - name: registry_center
+      user: registry
+    - name: orchestration_center
+      user: opena2a_t
+
+# =============================================================================
+# Registry Center Configuration (Required)
+# =============================================================================
+registry:
+  enabled: true
+  replicas: 2
+  image:
+    repository: ghcr.io/xunliyang/registry-center
+    tag: v1.0.0
+    pullPolicy: Always
+  port: 5000
+  # LLM configuration for registry-center
+  llm:
+    chat:
+      model: "your-chat-model"
+      url: "https://your-llm-provider.com/v1/chat/completions"
+      apiKey: "your-api-key"
+      existingSecret: ""
+      existingSecretKey: "registry-llm-chat-api-key"
+    embed:
+      model: "your-embed-model"
+      url: "https://your-llm-provider.com/v1/embeddings"
+      apiKey: "your-api-key"
+      existingSecret: ""
+      existingSecretKey: "registry-llm-embed-api-key"
+    rerank:
+      model: "your-rerank-model"
+      url: "https://your-llm-provider.com/v1/rerank"
+      apiKey: "your-api-key"
+      existingSecret: ""
+      existingSecretKey: "registry-llm-rerank-api-key"
+  # VectorDB (optional, Milvus)
+  vectordb:
+    enabled: false
+    host: ""
+    port: 19530
+  # TLS certificate configuration
+  # mode: auto (Helm generates self-signed cert, stored in Secret) / secret (user-provided Secret) / off (entrypoint generates per-pod)
+  # "auto" is recommended: generates once, persists in Secret, consistent across replicas and upgrades.
+  tls:
+    mode: auto
+    existingSecret: ""  # Used when mode=secret. Secret containing server.cer, server_key.pem, trust.cer, cert_pwd
+  # JWS signing certificate configuration
+  # mode: auto (Helm generates self-signed cert, stored in Secret) / secret (user-provided Secret) / off (entrypoint generates per-pod)
+  # "auto" is recommended: generates once, persists in Secret, consistent across replicas and upgrades.
+  signing:
+    mode: auto
+    existingSecret: ""  # Used when mode=secret. Secret containing server.cer, server_key.pem, cert_pwd
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Probes
+  livenessProbe:
+    httpGet:
+      path: /rest/v1/registry-center/agent-cards
+      port: 5000
+    initialDelaySeconds: 30
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /rest/v1/registry-center/agent-cards
+      port: 5000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+# =============================================================================
+# Orchestration Center Configuration (Optional)
+# =============================================================================
+orchestration:
+  # Set to false to skip orchestration-center deployment
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/xunliyang/orchestration-center
+    tag: v1.0.0
+    pullPolicy: Always
+  port: 5001
+  # Registry Center URL (auto-discovered if registry.enabled=true)
+  agentRegistryUrl: ""
+  # LLM configuration for orchestration-center
+  llm:
+    chat:
+      model: "your-chat-model"
+      url: "https://your-llm-provider.com/v1/chat/completions"
+      apiKey: "your-api-key"
+      existingSecret: ""
+      existingSecretKey: "orchestration-llm-chat-api-key"
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  # HPA
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  # Probes
+  livenessProbe:
+    httpGet:
+      path: /rest/v1/orchestrate/agent-cards
+      port: 5001
+    initialDelaySeconds: 40
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /rest/v1/orchestrate/agent-cards
+      port: 5001
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  startupProbe:
+    httpGet:
+      path: /rest/v1/orchestrate/agent-cards
+      port: 5001
+    failureThreshold: 12
+    periodSeconds: 10
+
+# =============================================================================
+# Workflow Designer Configuration (Frontend)
+# =============================================================================
+frontend:
+  # Set to false to skip workflow-designer deployment
+  enabled: true
+  replicas: 2
+  image:
+    repository: ghcr.io/xunliyang/workflow-designer
+    tag: v1.0.0
+    pullPolicy: Always
+  port: 80
+  nodePort: 30191
+  # Nginx configuration (mounted as ConfigMap to /etc/nginx/conf.d/default.conf)
+  nginxConfig: |
+    server {
+        listen 80;
+        server_name localhost;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml+rss application/json application/javascript;
+
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+
+        # API proxy to orchestration-center
+        location /rest/v1/orchestrate/ {
+            proxy_pass http://orchestration-center:5001;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_cache_bypass $http_upgrade;
+            
+            # SSE support
+            proxy_buffering off;
+            proxy_read_timeout 300s;
+        }
+
+        # Static files with cache
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # SPA fallback
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # HPA
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  # Probes
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# =============================================================================
+# Ingress Configuration
+# =============================================================================
+ingress:
+  enabled: true
+  className: nginx
+  # host: Set to a DNS name for host-based routing, or leave empty for IP-based path routing
+  # Examples: "openan.local" for DNS, "" for direct IP access (e.g., http://<LB_IP>/)
+  host: ""
+  # TLS configuration
+  tls:
+    enabled: false
+    secretName: openan-tls
+  # Annotations
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+

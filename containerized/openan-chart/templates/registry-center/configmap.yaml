@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.registry.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-center-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.registry.labels" . | nindent 4 }}
+data:
+  # Server
+  REGISTRY_IP: "0.0.0.0"
+  REGISTRY_PORT: {{ .Values.registry.port | quote }}
+  REGISTRY_ENABLE_HTTPS: "false"
+  REGISTRY_FORWARDED_ALLOW_IPS: "*"
+  REGISTRY_OWNER__VALIDATION__MODE: "relaxed"
+
+  # Persistence
+  PERSISTENCE_MODE: "postgresql"
+  DB_HOST: {{ include "openan.postgresHost" . | quote }}
+  DB_PORT: {{ .Values.postgresql.port | quote }}
+  DB_NAME: "registry_center"
+  DB_USERNAME: "registry"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "10"
+
+  # LLM Chat
+  LLM_CHAT_MODEL: {{ .Values.registry.llm.chat.model | quote }}
+  LLM_CHAT_URL: {{ .Values.registry.llm.chat.url | quote }}
+
+  # LLM Embed
+  LLM_EMBED_MODEL: {{ .Values.registry.llm.embed.model | quote }}
+  LLM_EMBED_URL: {{ .Values.registry.llm.embed.url | quote }}
+
+  # LLM Rerank
+  LLM_RERANK_MODEL: {{ .Values.registry.llm.rerank.model | quote }}
+  LLM_RERANK_URL: {{ .Values.registry.llm.rerank.url | quote }}
+
+  # VectorDB
+  USE_VECTORDB: {{ .Values.registry.vectordb.enabled | quote }}
+  {{- if .Values.registry.vectordb.enabled }}
+  VECTORDB_HOST: {{ .Values.registry.vectordb.host | quote }}
+  VECTORDB_PORT: {{ .Values.registry.vectordb.port | quote }}
+  {{- end }}
+{{- end }}
