@@ -7,8 +7,8 @@ System-level installation tooling for OpenAN, providing one-click binary install
 ```
 openan-installation/
 ├── binary/one-click/                # Binary installation
-│   ├── openan_install.sh            # one-click installation script
-│   ├── openan_uninstall.sh          # one-click uninstall script
+│   ├── install.sh                   # one-click installation script
+│   ├── uninstall.sh                 # one-click uninstall script
 │   ├── README.md                    # Binary installation guide
 └── containerized/                   # Containerized installation
     ├── build/                       # Image build scripts
@@ -54,7 +54,7 @@ Binary-based installation for virtual machines or bare-metal servers. Downloads 
 **Linux/macOS:**
 ```bash
 cd binary/one-click
-./openan_install.sh
+./install.sh
 ```
 
 **Features:**
@@ -83,7 +83,7 @@ kubectl delete namespace openan
 
 ```bash
 cd binary/one-click
-./openan_uninstall.sh
+./uninstall.sh
 ```
 
 ## Upgrade

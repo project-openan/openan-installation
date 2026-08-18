@@ -21,7 +21,7 @@ START_SAMPLE=false
 
 print_usage() {
     cat << 'USAGE_EOF'
-Usage: openan_install.sh [OPTIONS]
+Usage: install.sh [OPTIONS]
 
 Options:
   --reg          Install registry-center
@@ -31,10 +31,10 @@ Options:
   -h, --help     Show this help message and exit
 
 Examples:
-  ./openan_install.sh                 # Install everything (default: --reg --orc)
-  ./openan_install.sh --reg           # Install only registry-center
-  ./openan_install.sh --orc           # Install only orchestration-center
-  ./openan_install.sh --reg --orc --sample  # Install everything and start sample agents
+  ./install.sh                 # Install everything (default: --reg --orc)
+  ./install.sh --reg           # Install only registry-center
+  ./install.sh --orc           # Install only orchestration-center
+  ./install.sh --reg --orc --sample  # Install everything and start sample agents
 USAGE_EOF
 }
 
@@ -66,17 +66,17 @@ while [ $# -gt 0 ]; do
             ;;
         --all)
             echo "[ERROR] --all has been removed. Use --reg --orc (or no flags) instead."
-            echo "        See: ./openan_install.sh --help"
+            echo "        See: ./install.sh --help"
             exit 1
             ;;
         --register)
             echo "[ERROR] --register has been removed. Use --reg instead."
-            echo "        See: ./openan_install.sh --help"
+            echo "        See: ./install.sh --help"
             exit 1
             ;;
         --orchestrate)
             echo "[ERROR] --orchestrate has been removed. Use --orc instead."
-            echo "        See: ./openan_install.sh --help"
+            echo "        See: ./install.sh --help"
             exit 1
             ;;
         *)
