@@ -1,0 +1,47 @@
+OpenAN Platform has been deployed!
+
+{{- if .Values.registry.enabled }}
+
+Registry Center:
+  Internal URL: http://registry-center:{{ .Values.registry.port }}
+  {{- if .Values.ingress.enabled }}
+  External URL: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/registry
+  {{- end }}
+{{- end }}
+
+{{- if .Values.orchestration.enabled }}
+
+Orchestration Center:
+  Internal URL: http://orchestration-center:{{ .Values.orchestration.port }}
+{{- end }}
+
+{{- if .Values.frontend.enabled }}
+
+Workflow Designer (Frontend):
+  Internal URL: http://workflow-designer:{{ .Values.frontend.port }}
+  {{- if .Values.ingress.enabled }}
+  External URL: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/
+  {{- end }}
+{{- end }}
+
+{{- if .Values.postgresql.enabled }}
+
+PostgreSQL:
+  Host: openan-postgres
+  Port: {{ .Values.postgresql.port }}
+  Databases: {{ range .Values.postgresql.databases }}{{ .name }} {{ end }}
+{{- end }}
+
+Check status:
+  kubectl -n {{ .Values.namespace }} get pods
+
+View logs:
+{{- if .Values.registry.enabled }}
+  kubectl -n {{ .Values.namespace }} logs -l app=registry-center -f
+{{- end }}
+{{- if .Values.orchestration.enabled }}
+  kubectl -n {{ .Values.namespace }} logs -l app=orchestration-center -f
+{{- end }}
+{{- if .Values.frontend.enabled }}
+  kubectl -n {{ .Values.namespace }} logs -l app=workflow-designer -f
+{{- end }}

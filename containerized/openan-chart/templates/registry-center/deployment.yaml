@@ -1,0 +1,134 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.registry.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-center
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.registry.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.registry.replicas }}
+  selector:
+    matchLabels:
+      {{- include "openan.registry.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "openan.registry.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  {{- include "openan.registry.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: registry-center
+        image: "{{ .Values.registry.image.repository }}:{{ .Values.registry.image.tag }}"
+        imagePullPolicy: {{ .Values.registry.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.registry.port }}
+        envFrom:
+        - configMapRef:
+            name: registry-center-config
+        env:
+        - name: DB_PASSWORD
+          {{- if .Values.postgresql.existingSecret }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.postgresql.existingSecret }}
+              key: postgres-password
+          {{- else }}
+          valueFrom:
+            secretKeyRef:
+              name: registry-center-secret
+              key: db-password
+          {{- end }}
+        {{- if .Values.registry.llm.chat.apiKey }}
+        - name: LLM_CHAT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: registry-center-secret
+              key: llm-chat-api-key
+        {{- else if .Values.registry.llm.chat.existingSecret }}
+        - name: LLM_CHAT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.registry.llm.chat.existingSecret }}
+              key: {{ .Values.registry.llm.chat.existingSecretKey }}
+        {{- end }}
+        {{- if .Values.registry.llm.embed.apiKey }}
+        - name: LLM_EMBED_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: registry-center-secret
+              key: llm-embed-api-key
+        {{- else if .Values.registry.llm.embed.existingSecret }}
+        - name: LLM_EMBED_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.registry.llm.embed.existingSecret }}
+              key: {{ .Values.registry.llm.embed.existingSecretKey }}
+        {{- end }}
+        {{- if .Values.registry.llm.rerank.apiKey }}
+        - name: LLM_RERANK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: registry-center-secret
+              key: llm-rerank-api-key
+        {{- else if .Values.registry.llm.rerank.existingSecret }}
+        - name: LLM_RERANK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.registry.llm.rerank.existingSecret }}
+              key: {{ .Values.registry.llm.rerank.existingSecretKey }}
+        {{- end }}
+        livenessProbe:
+          {{- toYaml .Values.registry.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.registry.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.registry.resources | nindent 10 }}
+        {{- if or (ne .Values.registry.tls.mode "off") (ne .Values.registry.signing.mode "off") }}
+        volumeMounts:
+        {{- if ne .Values.registry.tls.mode "off" }}
+        - name: tls-certs
+          mountPath: /opt/registry-center/etc/ssl
+          readOnly: true
+        {{- end }}
+        {{- if ne .Values.registry.signing.mode "off" }}
+        - name: signing-certs
+          mountPath: /opt/registry-center/etc/sign_cert
+          readOnly: true
+        {{- end }}
+        {{- end }}
+      {{- if or (ne .Values.registry.tls.mode "off") (ne .Values.registry.signing.mode "off") }}
+      volumes:
+      {{- if ne .Values.registry.tls.mode "off" }}
+      - name: tls-certs
+        secret:
+          {{- if eq .Values.registry.tls.mode "auto" }}
+          secretName: registry-center-tls
+          {{- else }}
+          secretName: {{ .Values.registry.tls.existingSecret }}
+          {{- end }}
+      {{- end }}
+      {{- if ne .Values.registry.signing.mode "off" }}
+      - name: signing-certs
+        secret:
+          {{- if eq .Values.registry.signing.mode "auto" }}
+          secretName: registry-center-signing
+          {{- else }}
+          secretName: {{ .Values.registry.signing.existingSecret }}
+          {{- end }}
+      {{- end }}
+      {{- end }}
+{{- end }}

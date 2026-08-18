@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.orchestration.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orchestration-center-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.orchestration.labels" . | nindent 4 }}
+data:
+  # Server
+  ORCH_IP: "0.0.0.0"
+  ORCH_PORT: {{ .Values.orchestration.port | quote }}
+  ORCH_ENABLE_HTTPS: "false"
+  ORCH_FORWARDED_ALLOW_IPS: "*"
+
+  # Persistence
+  PERSISTENCE_MODE: "postgresql"
+
+  # Database
+  DB_HOST: {{ include "openan.postgresHost" . | quote }}
+  DB_PORT: {{ .Values.postgresql.port | quote }}
+  DB_NAME: "orchestration_center"
+  DB_USERNAME: "opena2a_t"
+
+  # Agent Registry
+  AGENT_REGISTRY_URL: {{ include "openan.registryUrl" . | quote }}
+
+  # LLM Chat
+  LLM_CHAT_MODEL: {{ .Values.orchestration.llm.chat.model | quote }}
+  LLM_CHAT_URL: {{ .Values.orchestration.llm.chat.url | quote }}
+{{- end }}

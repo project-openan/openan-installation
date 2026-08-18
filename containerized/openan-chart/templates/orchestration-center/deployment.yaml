@@ -1,0 +1,76 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- if .Values.orchestration.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestration-center
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.orchestration.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.orchestration.replicas }}
+  selector:
+    matchLabels:
+      {{- include "openan.orchestration.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "openan.orchestration.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 120
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  {{- include "openan.orchestration.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: orchestration-center
+        image: "{{ .Values.orchestration.image.repository }}:{{ .Values.orchestration.image.tag }}"
+        imagePullPolicy: {{ .Values.orchestration.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.orchestration.port }}
+        envFrom:
+        - configMapRef:
+            name: orchestration-center-config
+        env:
+        - name: DB_PASSWORD
+          {{- if .Values.postgresql.existingSecret }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.postgresql.existingSecret }}
+              key: postgres-password
+          {{- else }}
+          valueFrom:
+            secretKeyRef:
+              name: orchestration-center-secret
+              key: db-password
+          {{- end }}
+        {{- if .Values.orchestration.llm.chat.apiKey }}
+        - name: LLM_CHAT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: orchestration-center-secret
+              key: llm-chat-api-key
+        {{- else if .Values.orchestration.llm.chat.existingSecret }}
+        - name: LLM_CHAT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.orchestration.llm.chat.existingSecret }}
+              key: {{ .Values.orchestration.llm.chat.existingSecretKey }}
+        {{- end }}
+        startupProbe:
+          {{- toYaml .Values.orchestration.startupProbe | nindent 10 }}
+        livenessProbe:
+          {{- toYaml .Values.orchestration.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.orchestration.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.orchestration.resources | nindent 10 }}
+{{- end }}
