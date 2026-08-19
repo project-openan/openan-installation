@@ -59,7 +59,7 @@ registry:
   enabled: true
   replicas: 2
   image:
-    repository: ghcr.io/xunliyang/registry-center
+    repository: ghcr.io/project-openan/registry-center
     tag: v1.0.0
     pullPolicy: Always
   port: 5000
@@ -130,7 +130,7 @@ orchestration:
   enabled: true
   replicas: 1
   image:
-    repository: ghcr.io/xunliyang/orchestration-center
+    repository: ghcr.io/project-openan/orchestration-center
     tag: v1.0.0
     pullPolicy: Always
   port: 5001
@@ -187,7 +187,7 @@ frontend:
   enabled: true
   replicas: 2
   image:
-    repository: ghcr.io/xunliyang/workflow-designer
+    repository: ghcr.io/project-openan/workflow-designer
     tag: v1.0.0
     pullPolicy: Always
   port: 80
