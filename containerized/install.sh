@@ -344,10 +344,12 @@ check_k8s_cluster() {
 }
 
 check_ingress_controller() {
-    if kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller &> /dev/null; then
+    if kubectl get namespace ingress-nginx &>/dev/null && \
+       kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller --no-headers 2>/dev/null | grep -q .; then
         log_info "Nginx Ingress Controller found"
         return 0
-    elif kubectl get pods -n kube-system -l app.kubernetes.io/name=ingress-nginx &> /dev/null; then
+    elif kubectl get namespace kube-system &>/dev/null && \
+         kubectl get pods -n kube-system -l app.kubernetes.io/name=ingress-nginx --no-headers 2>/dev/null | grep -q .; then
         log_info "Nginx Ingress Controller found (kube-system)"
         return 0
     else
@@ -699,13 +701,6 @@ if command -v kubectl &> /dev/null && kubectl cluster-info &> /dev/null; then
     check_ingress_controller || MISSING_DEPS+=("ingress-nginx")
 fi
 
-# Check and setup LoadBalancer (requires kubectl, cluster, and ingress controller)
-if command -v kubectl &> /dev/null && kubectl cluster-info &> /dev/null; then
-    if kubectl get svc -n ingress-nginx ingress-nginx-controller &>/dev/null; then
-        setup_loadbalancer || log_warn "LoadBalancer setup incomplete, will use default ingress host"
-    fi
-fi
-
 # Install missing dependencies
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     echo ""
@@ -763,6 +758,15 @@ if [ ${#FAILED_INSTALLS[@]} -gt 0 ]; then
     log_error "Some dependencies failed to install: ${FAILED_INSTALLS[*]}"
     log_info "Please install them manually and re-run"
     exit 1
+fi
+
+# Check and setup LoadBalancer (after dependency install, so ingress-nginx Service is guaranteed to exist)
+if command -v kubectl &> /dev/null && kubectl cluster-info &> /dev/null; then
+    if kubectl get svc -n ingress-nginx ingress-nginx-controller &>/dev/null; then
+        setup_loadbalancer || log_warn "LoadBalancer setup incomplete, will use default ingress host"
+    else
+        log_warn "Ingress Controller service not found in ingress-nginx namespace, skipping LoadBalancer/MetalLB setup"
+    fi
 fi
 
 echo ""
