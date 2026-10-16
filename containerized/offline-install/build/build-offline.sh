@@ -14,9 +14,13 @@
 #       --registry-src ~/src/registry-center \
 #       --orchestration-src ~/src/orchestration-center
 #   ./build-offline.sh --app-source tars --app-tars-dir ~/prebuilt
+#   ./build-offline.sh --tag v1.0.0 --registry-tag v1.2.0 --app-source pull
 #
 # Options:
-#   --tag <tag>                 app image tag (overrides the tag derived from --source-ref)
+#   --tag <tag>                 app image tag for all components (overrides tags derived from --source-ref)
+#   --registry-tag <tag>        registry-center image tag (overrides --tag)
+#   --orchestration-tag <tag>   orchestration-center + workflow-designer tag (overrides --tag)
+#   --portal-tag <tag>          openan-portal tag (overrides --tag)
 #   --source-ref <ref>          Source Git ref; when --tag is unset, 'main' -> main-YYYYMMDD,
 #                               any other ref becomes the tag (default v1.0.0)
 #   --app-registry <host/ns>    upstream app registry (default ghcr.io/project-openan)
@@ -67,6 +71,9 @@ METALLB_VERSION="v0.16.1"
 TAG="v1.0.0"
 TAG_EXPLICIT=false
 SOURCE_REF="v1.0.0"
+REGISTRY_TAG=""
+ORCHESTRATION_TAG=""
+PORTAL_TAG=""
 APP_REGISTRY="ghcr.io/project-openan"
 APP_SOURCE="pull"
 REGISTRY_SRC=""
@@ -82,6 +89,9 @@ KEEP_IMAGES="false"
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)               TAG="$2"; TAG_EXPLICIT=true; shift 2 ;;
+        --registry-tag)      REGISTRY_TAG="$2"; shift 2 ;;
+        --orchestration-tag) ORCHESTRATION_TAG="$2"; shift 2 ;;
+        --portal-tag)        PORTAL_TAG="$2"; shift 2 ;;
         --app-registry)      APP_REGISTRY="$2"; shift 2 ;;
         --app-source)        APP_SOURCE="$2"; shift 2 ;;
         --registry-src)      REGISTRY_SRC="$2"; shift 2 ;;
@@ -116,10 +126,12 @@ done
 docker buildx version >/dev/null 2>&1 || { log_error "docker buildx is required"; exit 1; }
 
 # --- Layout -------------------------------------------------------------------
-APP_REGISTRY_CENTER_REF="$APP_REGISTRY/registry-center:$TAG"
-APP_ORCHESTRATION_CENTER_REF="$APP_REGISTRY/orchestration-center:$TAG"
-APP_WORKFLOW_DESIGNER_REF="$APP_REGISTRY/workflow-designer:$TAG"
-APP_PORTAL_REF="$APP_REGISTRY/openan-portal:$TAG"
+# Per-component tags: --registry-tag/--orchestration-tag/--portal-tag override
+# the global --tag for that component; unset components fall back to --tag.
+APP_REGISTRY_CENTER_REF="$APP_REGISTRY/registry-center:${REGISTRY_TAG:-$TAG}"
+APP_ORCHESTRATION_CENTER_REF="$APP_REGISTRY/orchestration-center:${ORCHESTRATION_TAG:-$TAG}"
+APP_WORKFLOW_DESIGNER_REF="$APP_REGISTRY/workflow-designer:${ORCHESTRATION_TAG:-$TAG}"
+APP_PORTAL_REF="$APP_REGISTRY/openan-portal:${PORTAL_TAG:-$TAG}"
 
 mkdir -p "$OUT_DIR"
 BUNDLE="$(cd "$OUT_DIR" && pwd)/openan-offline-$TAG"

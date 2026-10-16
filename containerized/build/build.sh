@@ -73,10 +73,12 @@ COMPONENTS_SPECIFIED=false
 
 TEMP_DIR=""
 
-log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_step()  { echo -e "${CYAN}[STEP]${NC} $1"; }
+# Log messages go to stderr so command substitution (resolve_src, etc.)
+# captures only the intended return value on stdout.
+log_info()  { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+log_step()  { echo -e "${CYAN}[STEP]${NC} $1" >&2; }
 
 cleanup() {
     if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ] && [[ "${TEMP_DIR##*/}" == openan-build.* ]]; then
