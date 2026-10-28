@@ -52,6 +52,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
+        ${BACKEND_TLS_OPTIONS}
 
         # SSE support (/rest/v1/orchestrate/execute, /dispatch)
         proxy_buffering off;
@@ -70,6 +71,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
+        ${REGISTRY_TLS_OPTIONS}
 
         proxy_buffering off;
         proxy_read_timeout 300s;
@@ -87,6 +89,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
+        ${BACKEND_TLS_OPTIONS}
 
         # SSE support
         proxy_buffering off;

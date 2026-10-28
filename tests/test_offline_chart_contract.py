@@ -144,6 +144,54 @@ def test_frontend_invalid_type_fails():
     assert "frontend.type must be" in error
 
 
+def test_frontend_backend_tls_mounts_for_mtls():
+    # The frontend nginx needs TLS material to verify the backend server cert
+    # and present a client certificate (mTLS) — the BFF proxy approach the
+    # orchestration-center project itself uses (15-openan-backend.envsh).
+    # Without it, HTTPS backends requiring client certs return 502.
+    docs = render({"https.enabled": True,
+                   "frontend.backendTlsSecret": "openan-ingress-client"})
+    spec = docs["Deployment/openan-frontend"]["spec"]["template"]["spec"]
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert volumes["backend-tls"]["secret"]["secretName"] == "openan-ingress-client"
+    assert volumes["backend-tls"]["secret"]["defaultMode"] == 0o440
+    mounts = spec["containers"][0]["volumeMounts"]
+    assert any(m["mountPath"] == "/etc/nginx/backend-tls" and m["readOnly"]
+               for m in mounts)
+    # No TLS volume when the secret is not set
+    default = render()
+    default_volumes = {v["name"] for v in
+                       default["Deployment/openan-frontend"]["spec"]["template"]["spec"]["volumes"]}
+    assert "backend-tls" not in default_volumes
+
+
+def test_frontend_nginx_tls_directives_follow_tls_values():
+    # The workflow-designer nginxConfig must include proxy_ssl_* only when
+    # HTTPS + backend TLS material are configured (field: NodePort 502 because
+    # the frontend nginx never presented a client cert to the HTTPS backend).
+    wd = {"frontend.type": "workflow-designer"}
+    plain = render(wd)
+    plain_conf = plain["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
+    assert "proxy_ssl_" not in plain_conf
+
+    https = render({**wd, "https.enabled": True,
+                    "frontend.backendTlsSecret": "openan-ingress-client"})
+    conf = https["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
+    assert "proxy_ssl_verify on;" in conf
+    assert "proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer" in conf
+    assert conf.count("proxy_ssl_trusted_certificate") == 2  # gateway + direct paths
+    # mTLS client material only when verifyClient is on
+    assert "proxy_ssl_certificate " not in conf
+
+    mtls = render({**wd, "https.enabled": True, "https.verifyClient": True,
+                   "frontend.backendTlsSecret": "openan-ingress-client",
+                   "registry.ingressClientSecret": "rc-ingress-client",
+                   "orchestration.ingressClientSecret": "ingress-client"})
+    conf = mtls["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
+    assert "proxy_ssl_certificate /etc/nginx/backend-tls/client.cer" in conf
+    assert "proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem" in conf
+
+
 def test_portal_envs_follow_https_switch():
     docs = render({"https.enabled": True})
     container = docs["Deployment/openan-frontend"]["spec"]["template"]["spec"]["containers"][0]

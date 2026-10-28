@@ -117,12 +117,29 @@ spec:
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
           {{- if eq (include "openan.frontendType" .) "portal" }}
           # The portal image renders its nginx config itself (envsubst template
-          # shipped in the image); the chart only provides the upstream URLs.
+          # shipped in the image); the chart only provides the upstream URLs
+          # and the backend TLS material paths (mounted via backendTlsSecret).
           env:
             - name: BACKEND_URL
               value: {{ include "openan.httpScheme" . }}://orchestration-center:{{ .Values.orchestration.port }}
             - name: REGISTRY_URL
               value: {{ include "openan.httpScheme" . }}://registry-center:{{ .Values.registry.port }}
+            {{- if and .Values.https.enabled .Values.frontend.backendTlsSecret }}
+            - name: BACKEND_VERIFY_SERVER
+              value: "true"
+            - name: REGISTRY_VERIFY_SERVER
+              value: "true"
+            - name: BACKEND_CA_FILE
+              value: /etc/nginx/backend-tls/trust.cer
+            - name: REGISTRY_CA_FILE
+              value: /etc/nginx/backend-tls/trust.cer
+            {{- if .Values.https.verifyClient }}
+            - name: BACKEND_CLIENT_CERT
+              value: /etc/nginx/backend-tls/client.cer
+            - name: BACKEND_CLIENT_KEY
+              value: /etc/nginx/backend-tls/client_key.pem
+            {{- end }}
+            {{- end }}
           {{- end }}
           ports:
             - containerPort: {{ include "openan.frontendContainerPort" . }}
@@ -171,6 +188,15 @@ spec:
           secret:
             secretName: {{ .Values.frontend.backendTlsSecret }}
             defaultMode: 0440
+            # The ingress client material is stored as tls.crt/tls.key/ca.crt;
+            # the frontend nginx contract expects client.cer/client_key.pem/trust.cer
+            items:
+            - key: ca.crt
+              path: trust.cer
+            - key: tls.crt
+              path: client.cer
+            - key: tls.key
+              path: client_key.pem
         {{- end }}
       {{- end }}
       {{- if eq (include "openan.frontendType" .) "portal" }}
@@ -182,6 +208,15 @@ spec:
           secret:
             secretName: {{ .Values.frontend.backendTlsSecret }}
             defaultMode: 0440
+            # The ingress client material is stored as tls.crt/tls.key/ca.crt;
+            # the frontend nginx contract expects client.cer/client_key.pem/trust.cer
+            items:
+            - key: ca.crt
+              path: trust.cer
+            - key: tls.crt
+              path: client.cer
+            - key: tls.key
+              path: client_key.pem
         {{- end }}
       {{- end }}
 {{- end }}
