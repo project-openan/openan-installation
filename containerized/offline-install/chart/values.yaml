@@ -381,6 +381,18 @@ frontend:
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_cache_bypass $http_upgrade;
+            {{- if and .Values.https.enabled .Values.frontend.backendTlsSecret }}
+            # Verify the backend server cert against the shared CA and present
+            # a client certificate when the backend requires one (mTLS).
+            proxy_ssl_server_name on;
+            proxy_ssl_name orchestration-center;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer;
+            {{- if .Values.https.verifyClient }}
+            proxy_ssl_certificate /etc/nginx/backend-tls/client.cer;
+            proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem;
+            {{- end }}
+            {{- end }}
 
             # SSE support
             proxy_buffering off;
@@ -398,6 +410,16 @@ frontend:
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_cache_bypass $http_upgrade;
+            {{- if and .Values.https.enabled .Values.frontend.backendTlsSecret }}
+            proxy_ssl_server_name on;
+            proxy_ssl_name orchestration-center;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer;
+            {{- if .Values.https.verifyClient }}
+            proxy_ssl_certificate /etc/nginx/backend-tls/client.cer;
+            proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem;
+            {{- end }}
+            {{- end }}
             
             # SSE support
             proxy_buffering off;

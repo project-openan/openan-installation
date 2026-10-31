@@ -75,17 +75,33 @@ cd openan-offline-compose-deployment-20261020
 
 ## Step 3: Prepare private configuration
 
-Copy the public templates into private files beside `config.env` and fill
-in every required value:
+**Quick evaluation (recommended first run):**
 
 ```bash
-cp config.env.example config.env
-cp templates/registry.env.example registry.env
-cp templates/orchestration.env.example orchestration.env
-cp templates/models.yaml.example registry-models.yaml   # then edit
-cp templates/models.yaml.example orchestration-models.yaml
-cp templates/integration_credentials.conf.example integration_credentials.conf
+# One command: auto-generates all secrets, certificates, models.yaml,
+# credential file; configures bundled MySQL + HTTP + portal frontend.
+sudo scripts/install.sh --eval
+```
+
+**Manual setup (interactive, for custom configurations):**
+
+```bash
+# Generates registry.env, orchestration.env, models.yaml, credential file
+# with masked prompts for LLM key, admin password, DB password
+scripts/gen-secrets.sh --interactive
 chmod 600 config.env registry.env orchestration.env integration_credentials.conf
+sudo scripts/check-env.sh --config config.env
+sudo scripts/install.sh --config config.env
+```
+
+**Non-interactive setup (random keys, edit models.yaml afterwards):**
+
+```bash
+scripts/gen-secrets.sh --eval
+# Edit registry-models.yaml / orchestration-models.yaml for your LLM
+chmod 600 config.env registry.env orchestration.env integration_credentials.conf
+sudo scripts/check-env.sh --config config.env
+sudo scripts/install.sh --config config.env
 ```
 
 Minimum decisions in `config.env`:

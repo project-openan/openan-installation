@@ -102,10 +102,12 @@ BUNDLE="$(cd "$OUT_DIR" && pwd)/openan-offline-compose-$TAG"
 # leaves only its own partial output for diagnosis; it never publishes a tar.
 [ ! -e "$BUNDLE" ] && [ ! -e "$BUNDLE.tar.gz" ] || { echo 'Output exists; choose a fresh output/tag' >&2; exit 1; }
 mkdir -p "$BUNDLE/images" "$BUNDLE/deps" "$BUNDLE/scripts/lib" "$BUNDLE/compose/init"
-for script in install.sh check-env.sh uninstall.sh configure.py; do cp "$SOURCE/scripts/$script" "$BUNDLE/scripts/"; done
+for script in install.sh check-env.sh uninstall.sh configure.py gen-secrets.sh; do cp "$SOURCE/scripts/$script" "$BUNDLE/scripts/"; done
 cp "$SOURCE/scripts/lib/common.sh" "$BUNDLE/scripts/lib/"
 cp "$SOURCE/compose/init/create-databases.sh" "$SOURCE/compose/init/create-mysql-databases.sh" "$BUNDLE/compose/init/"
 cp "$SOURCE/config.env.example" "$BUNDLE/"
+mkdir -p "$BUNDLE/tool"
+cp "$SOURCE/tool/gen-certs.sh" "$BUNDLE/tool/"
 mkdir -p "$BUNDLE/templates"
 for template in registry.env.example orchestration.env.example models.yaml.example integration_credentials.conf.example; do
     cp "$SOURCE/templates/$template" "$BUNDLE/templates/"
@@ -114,7 +116,7 @@ cp "$SOURCE/README.md" "$BUNDLE/"
 mkdir -p "$BUNDLE/docs"; cp "$SOURCE/docs/DEPENDENCIES.md" "$BUNDLE/docs/"
 # With umask077, cp produces0600. +x would produce0711, unreadable to the
 # unprivileged MySQL/PostgreSQL entrypoint user that runs these public scripts.
-chmod 0755 "$BUNDLE/scripts/"*.sh "$BUNDLE/compose/init/"*.sh
+chmod 0755 "$BUNDLE/scripts/"*.sh "$BUNDLE/tool/"*.sh "$BUNDLE/compose/init/"*.sh
 RC="$APP_REGISTRY/registry-center:${REGISTRY_TAG:-$TAG}"; OC="$APP_REGISTRY/orchestration-center:${ORCHESTRATION_TAG:-$TAG}"; UI="$APP_REGISTRY/workflow-designer:${ORCHESTRATION_TAG:-$TAG}"; PORTAL="$APP_REGISTRY/openan-portal:${PORTAL_TAG:-$TAG}"
 declare -A REFS=([registry-center]="$RC" [orchestration-center]="$OC" [workflow-designer]="$UI" [postgres]="postgres:15-alpine" [mysql]="mysql:8.4" [nginx]="nginx:1.27.5-alpine")
 for arch in "${ARCHS[@]}"; do
@@ -175,9 +177,11 @@ images = dict(zip(['registry-center','orchestration-center','workflow-designer',
                   [*sys.argv[3:6], 'postgres:15-alpine','nginx:1.27.5-alpine','mysql:8.4']))
 if sys.argv[6]:
     images['portal'] = sys.argv[6]
+# str.removeprefix is Python 3.9+; use a compatible slice for older build hosts
+archs = [p.split('/', 1)[1] if p.startswith('linux/') else p
+         for p in sys.argv[2].split(',')]
 with open(sys.argv[1], 'w', encoding='utf-8') as stream:
-    json.dump({'architectures': [p.removeprefix('linux/') for p in sys.argv[2].split(',')],
-               'images': images}, stream, indent=2)
+    json.dump({'architectures': archs, 'images': images}, stream, indent=2)
 PY
 (cd "$BUNDLE" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS)
 tar -C "$(dirname "$BUNDLE")" -czf "$BUNDLE.tar.gz" "$(basename "$BUNDLE")"

@@ -23,3 +23,32 @@
 
 export REGISTRY_URL="${REGISTRY_URL:-${REGISTRY_SCHEME}://${REGISTRY_HOST}:${REGISTRY_PORT}}"
 export BACKEND_URL="${BACKEND_URL:-${BACKEND_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}}"
+
+# Backend TLS options: verify the upstream server cert against the mounted CA
+# and present a client certificate when provided (mTLS). Mirrors the
+# workflow-designer 15-openan-backend.envsh convention.
+_tls_options() {
+    local name="$1" ca_file="$2" cert="$3" key="$4" verify="$5"
+    local opts="proxy_ssl_server_name on; proxy_ssl_name ${name};"
+    if [ "$verify" = "true" ] && [ -n "$ca_file" ]; then
+        opts="$opts proxy_ssl_verify on; proxy_ssl_trusted_certificate $ca_file;"
+    else
+        opts="$opts proxy_ssl_verify off;"
+    fi
+    if [ -n "$cert" ] && [ -n "$key" ]; then
+        opts="$opts proxy_ssl_certificate $cert; proxy_ssl_certificate_key $key;"
+    fi
+    printf '%s' "$opts"
+}
+
+BACKEND_TLS_OPTIONS=""
+if [ "$BACKEND_SCHEME" = "https" ]; then
+    BACKEND_TLS_OPTIONS="$(_tls_options "${BACKEND_HOST}" "${BACKEND_CA_FILE:-}" \
+        "${BACKEND_CLIENT_CERT:-}" "${BACKEND_CLIENT_KEY:-}" "${BACKEND_VERIFY_SERVER:-true}")"
+fi
+REGISTRY_TLS_OPTIONS=""
+if [ "$REGISTRY_SCHEME" = "https" ]; then
+    REGISTRY_TLS_OPTIONS="$(_tls_options "${REGISTRY_HOST}" "${REGISTRY_CA_FILE:-}" \
+        "${REGISTRY_CLIENT_CERT:-}" "${REGISTRY_CLIENT_KEY:-}" "${REGISTRY_VERIFY_SERVER:-true}")"
+fi
+export BACKEND_TLS_OPTIONS REGISTRY_TLS_OPTIONS
