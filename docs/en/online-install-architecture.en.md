@@ -1,5 +1,7 @@
 # Online Installation Architecture Design
 
+English | [中文](online-install-architecture.zh.md)
+
 ## 1. Overview
 
 The `containerized/online-install/` deliverable deploys the OpenAN platform
@@ -27,8 +29,8 @@ scriptable CI; it never bypasses the chart.
 ### Non-goals
 
 - Cluster creation (see `containerized/offline-install/docs/KUBEADM_CLUSTER.md`).
-- Offline/air-gapped deployment (see `offline-install-architecture.md` for
-  the Kubernetes line and `offline-install-compose-architecture.md` for the
+- Offline/air-gapped deployment (see `offline-install-architecture.en.md` for
+  the Kubernetes line and `offline-install-compose-architecture.en.md` for the
   Docker Compose line).
 - Image building for registry-center/orchestration-center (see
   `containerized/build/build.sh`); the installer can invoke it but does not
@@ -500,65 +502,9 @@ All application pods run with:
 
 ---
 
-## 7. Design Decisions
+## 7. Extensibility
 
-### D1: Why one chart, not subcharts?
-
-All components share the `database` block and the `frontend`/`ingress`
-configuration. Splitting into subcharts would require duplicating the database
-contract or introducing umbrella-chart complexity. The current flat structure keeps every
-dependency visible in one `values.yaml`.
-
-### D2: Why `Recreate` instead of `RollingUpdate`?
-
-RC and OC each mount a `ReadWriteOnce` PVC. `RollingUpdate` with surge
-creates a new pod that cannot mount the same volume, causing the new pod to
-be stuck in `Pending` and the old pod to be killed only after the new one is
-ready — the rollout deadlocks. `Recreate` (kill all, then create) is the
-correct strategy for single-replica RWO deployments.
-
-### D3: Why secrets via envFrom wholesale?
-
-`runtimeSecret` is consumed via `envFrom: secretRef`, meaning every key in
-the Secret becomes an environment variable. This is deliberate: the services
-(registry-center, orchestration-center) evolve their env contract independently
-of the chart. Adding a new credential (e.g., a new OAuth client) only
-requires adding a key to the Secret — no chart change needed.
-
-### D4: Why `validate.yaml` instead of admission webhooks?
-
-Admission webhooks require deployment infrastructure (a webhook server, TLS,
-RBAC). Helm-native `fail` provides compile-time validation with zero runtime
-dependencies. The tradeoff is that validation only runs during
-`helm template/lint/install` — not on subsequent `kubectl apply` of raw
-manifests. For the GitOps workflow (helm-only), this is sufficient.
-
-### D5: Why portal is pull-only?
-
-Portal's build pipeline (npm → Vite build → static assets → nginx image) is
-fundamentally different from the Python services. Embedding this in the
-offline/shared builders would:
-- Add Node.js as a build dependency
-- Require knowledge of the portal's npm workspace layout
-- Couple chart releases to portal source changes
-
-Instead, portal images are built by the dedicated
-`containerized/build/portal/build-portal-image.sh` and published to a
-registry. All build entrypoints (shared, offline K8s, offline Compose) pull
-the pre-built image — the chart only provides `BACKEND_URL`/`REGISTRY_URL`.
-
-### D6: Why `namespace` must match Helm `--namespace`?
-
-The chart writes `namespace:` in every resource spec explicitly. If this
-differed from the Helm namespace, `helm uninstall` would not clean up
-correctly, and cross-namespace references (Secrets, PVCs) would fail.
-`validate.yaml:7` enforces this at render time.
-
----
-
-## 8. Extensibility
-
-### 8.1 Adding a new backend component
+### 7.1 Adding a new backend component
 
 1. Add a `values.yaml` block (image, port, replicas, tls, persistence).
 2. Create `templates/<name>/deployment.yaml` + `service.yaml` +
@@ -568,20 +514,20 @@ correctly, and cross-namespace references (Secrets, PVCs) would fail.
 5. Add ingress path in `ingress.yaml` (if externally reachable).
 6. Add contract tests in `tests/test_deployment_contract.py`.
 
-### 8.2 Adding a new database backend
+### 7.2 Adding a new database backend
 
 The `database.type` field is open (currently `postgresql`|`mysql`). Add the
 new type to `validate.yaml`, add connection logic in the helpers, and update
 the deployment env wiring.
 
-### 8.3 Adding a new frontend type
+### 7.3 Adding a new frontend type
 
 Add the type name to `openan.frontendType`, set the container port in
 `openan.frontendContainerPort`, set the image default in
 `openan.frontendImageRepository`, and add the mode branch in the frontend
 Deployment template.
 
-### 8.4 Known non-goals
+### 7.4 Known non-goals
 
 - **Multi-replica RC** — blocked on distributed event coordination.
 - **Multi-replica OC** — blocked on shared session storage.
@@ -590,7 +536,7 @@ Deployment template.
 - **Namespace-scoped RBAC** — the chart runs with the Helm service account;
   fine-grained RBAC is left to the operator.
 
-### 8.5 Testing strategy
+### 7.5 Testing strategy
 
 All contract tests (`tests/test_deployment_contract.py`) use real `helm
 template` rendering — not mocks — and assert on the rendered YAML. This

@@ -6,7 +6,7 @@
 #   helm install openan ./openan-chart -n openan --create-namespace -f example.values.yaml
 #
 # Production: copy this file, switch to external SQL, enable TLS, and
-# reference pre-created Secrets. See docs/online-install-architecture.md for details.
+# reference pre-created Secrets. See docs/en/online-install-architecture.en.md for details.
 
 namespace: openan
 

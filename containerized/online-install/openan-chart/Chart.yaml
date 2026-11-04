@@ -7,6 +7,8 @@ name: openan
 description: OpenAN Platform - Registry Center and Orchestration Center
 type: application
 version: 0.1.0
+# appVersion marks the application family only — image tags are pinned
+# explicitly in values (old v1.0.0 images are not compatible with this chart).
 appVersion: "1.0.0"
 kubeVersion: ">=1.25.0-0"
 keywords:
