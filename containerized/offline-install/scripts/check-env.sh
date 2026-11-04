@@ -85,8 +85,8 @@ section "Transport security (HTTPS)"
 if [ "$(printf '%s' "$HTTPS_ENABLED" | tr '[:upper:]' '[:lower:]')" != "true" ]; then
     warn "HTTPS_ENABLED is not true — in-cluster traffic stays plain HTTP"
 else
-    if [ -n "$INGRESS_HOST" ] && { printf '%s' "$INGRESS_HOST" | grep -Eq '^[0-9.]+$' || printf '%s' "$INGRESS_HOST" | grep -q ':'; }; then
-        fail "INGRESS_HOST must be a DNS name, not an IP address (Kubernetes rejects IP hosts)"
+    if [ -n "$INGRESS_HOST" ]; then
+        pass "Ingress host: $INGRESS_HOST (DNS name or IP; IP enables https://<IP> public access)"
     fi
     if [ -n "$RC_TLS_SECRET" ] || [ -n "$OC_TLS_SECRET" ] || [ -n "$INGRESS_CLIENT_SECRET" ]; then
         # Existing-Secret mode: all three names required and present in the cluster
