@@ -3,7 +3,7 @@
 > **Offline-install-compose line.** Single-host offline deployment of the
 > OpenAN platform via Docker Compose: one registry-center, one
 > orchestration-center and one Nginx public entry. No Kubernetes, no Helm,
-> no cluster — the offline host only needs Docker and Python 3.
+> no cluster — the offline host only needs Docker, Python 3 and sha256sum (coreutils).
 
 End-to-end guide: build the offline bundle on an **internet-connected
 machine**, transfer it to the **offline machine**, and install OpenAN as a
@@ -28,7 +28,10 @@ lifecycle details see [README.md](README.md) and
 
 - Linux amd64/arm64 matching the bundle
 - **Docker Engine with Compose v2.20+** and **Python 3.10+** (standard
-  library only — no pip, no Helm, no cluster, no registry)
+  library only — no pip, no Helm, no cluster, no registry). check-env
+  verifies tool presence only (docker / compose / python3 / sha256sum), not
+  version numbers — too-old versions surface as errors at `compose up`
+  (`--wait` requires a recent Compose v2).
 - **Root privileges** — the installer provisions the application data/log
   directories as UID 10001
 - An unused public bind/port (default `0.0.0.0:8080`) and enough disk for
@@ -89,7 +92,7 @@ sudo scripts/install.sh --eval
 # Generates registry.env, orchestration.env, models.yaml, credential file
 # with masked prompts for LLM key, admin password, DB password
 scripts/gen-secrets.sh --interactive
-chmod 600 config.env registry.env orchestration.env integration_credentials.conf
+chmod 600 config.env registry.env orchestration.env integration_credentials.conf registry-models.yaml orchestration-models.yaml
 sudo scripts/check-env.sh --config config.env
 sudo scripts/install.sh --config config.env
 ```
@@ -99,7 +102,7 @@ sudo scripts/install.sh --config config.env
 ```bash
 scripts/gen-secrets.sh --eval
 # Edit registry-models.yaml / orchestration-models.yaml for your LLM
-chmod 600 config.env registry.env orchestration.env integration_credentials.conf
+chmod 600 config.env registry.env orchestration.env integration_credentials.conf registry-models.yaml orchestration-models.yaml
 sudo scripts/check-env.sh --config config.env
 sudo scripts/install.sh --config config.env
 ```

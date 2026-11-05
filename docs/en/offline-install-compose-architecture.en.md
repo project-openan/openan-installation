@@ -1,5 +1,7 @@
 # Offline Compose Installation Architecture Design
 
+English | [中文](offline-install-compose-architecture.zh.md)
+
 ## 1. Overview
 
 The `containerized/offline-install-compose/` deliverable deploys the OpenAN
@@ -13,7 +15,7 @@ from a self-contained bundle. It consists of two cooperating parts:
 
 The generated Compose JSON is the **single deployment artifact** — there is
 no hand-maintained YAML or nginx contract anywhere in the line
-(`README.md:133-135`). The installer is explicit and repeatable: **no
+(`README.md:135-138`). The installer is explicit and repeatable: **no
 prompts, no shell-evaluated config, no network pulls** (`install.sh:4`).
 
 ### Scope
@@ -27,10 +29,10 @@ prompts, no shell-evaluated config, no network pulls** (`install.sh:4`).
 
 ### Non-goals
 
-- Kubernetes in any form (see `offline-install-architecture.md` for the K8s
+- Kubernetes in any form (see `offline-install-architecture.en.md` for the K8s
   line).
 - Interactive secret collection or `--skip-check` escape hatches
-  (`README.md:53`).
+  (`README.md:56`).
 - High availability, zero-downtime upgrades, model/workflow execution
   testing (the smoke test exercises transport and persistence, not
   business semantics).
@@ -93,7 +95,7 @@ capabilities.
 |------------|-------|
 | Docker + Compose v2 | `require_tools` also verifies a live daemon (`docker info`) and the compose plugin |
 | python3 stdlib | configure.py deliberately uses no third-party packages |
-| Operator-provided inputs | `config.env`, models.yaml files, runtime env files, PKI directories, credential file — all read-only binds; **the installer never changes source PKI ownership** (must be readable by UID 10001 without being world-readable, `README.md:113-118`) |
+| Operator-provided inputs | `config.env`, models.yaml files, runtime env files, PKI directories, credential file — all read-only binds; **the installer never changes source PKI ownership** (must be readable by UID 10001 without being world-readable, `README.md:116-121`) |
 
 ---
 
@@ -210,8 +212,7 @@ flowchart LR
 ### 4.2 Build flow (`build/build-offline.sh`)
 
 - One **global tag** for all four app images (`--tag` or derived from
-  `--source-ref`: `main` → `main-YYYYMMDD`); per-component tags are a
-  K8s-line feature.
+  `--source-ref`: `main` → `main-YYYYMMDD`); per-component overrides (`--registry-tag`/`--orchestration-tag`/`--portal-tag`) are also supported.
 - `--app-source`: `pull` (registry), `build` (local source dir with
   Dockerfile, or release tarball URL, or GitHub archive for the ref;
   buildx per platform), or `tars` (prebuilt per-arch tars).
@@ -242,7 +243,7 @@ reuses it; upgrade = back up SQL + `runtime/`, then reinstall.
 
 ## 5. Configuration Contract
 
-### 5.1 config.env (38 keys, closed surface)
+### 5.1 config.env (40 keys, closed surface)
 
 Grouped summary (authoritative list: `DEFAULTS` in configure.py and
 `config.env.example`):
@@ -289,53 +290,7 @@ generated.
 
 ---
 
-## 7. Design Decisions
-
-### D1: Why a generated compose.json instead of a static YAML?
-
-Every deployment knob (DB type, three TLS switches, frontend type, ports,
-credentials) changes services, volumes, binds and nginx together. A static
-YAML plus an nginx template plus env plumbing would be three contracts to
-keep in sync; configure.py computes all of them from one validated input,
-and the contract tests assert the invariants of the output directly.
-
-### D2: Why JSON and why `$$` escaping?
-
-Compose accepts JSON as well as YAML, and JSON round-trips through the
-stdlib without a YAML dependency (stdlib-only is a hard constraint on the
-offline host). Compose still interpolates `$` inside JSON, so every literal
-dollar is doubled before serialization — the only way passwords with `$`
-survive.
-
-### D3: Why does nginx resolve upstreams dynamically?
-
-Backends restart with new IPs (no fixed IPs by design, so IPAM can replace
-them). `resolver 127.0.0.11 valid=2s` + `server … resolve` keeps the proxy
-correct without recreating it — proven by the smoke test, which replaces
-both backends and asserts the nginx container ID is unchanged.
-
-### D4: Why is external SQL the production default?
-
-The Compose line targets a single host: a database container on the same
-host adds no availability and complicates upgrades. The bundled DB exists
-for self-contained evaluation, with named volumes that survive uninstall.
-
-### D5: Why does uninstall preserve everything?
-
-The line's data-safety posture: an uninstall must never destroy SQL data,
-runtime artifacts or operator PKI. Operators who want removal do it
-explicitly; upgrades document "back up, then reinstall".
-
-### D6: Why UID 10001 provisioning in the installer?
-
-The application containers run as UID 10001 with read-only mounts; their
-writable `data/`/`log/` bind-mount hosts must be owned by that UID. Doing
-the chown in configure.py (as root, before containers start) avoids both a
-privileged init container and a first-run crash.
-
----
-
-## 8. Testing Strategy
+## 7. Testing Strategy
 
 - **Contract tests** (`tests/test_offline_compose_contract.py`, no live
   Docker): a 64-case matrix (db × public TLS × per-backend TLS × frontend)
@@ -353,10 +308,4 @@ privileged init container and a first-run crash.
   across restart, backend replacement with DNS blockers occupying the freed
   IPs, audit-history survival. Framed as the release gate: "only a
   successful run for the exact revisions being released establishes
-  coverage; render/unit tests are not Docker evidence" (`README.md:142-149`).
-
-### Known documentation drift (flagged for cleanup)
-
-- `build/README.md:37,55` still shows `--portal-src` (removed; the script
-  rejects it) and claims a `--source-ref` default of `v1.0.0` — the Compose
-  builder requires an explicit `--tag`/`--source-ref`.
+  coverage; render/unit tests are not Docker evidence" (`README.md:143-152`).

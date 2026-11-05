@@ -1,5 +1,7 @@
 # Offline Kubernetes Installation Architecture Design
 
+English | [中文](offline-install-architecture.zh.md)
+
 ## 1. Overview
 
 The `containerized/offline-install/` deliverable deploys the OpenAN platform
@@ -38,7 +40,7 @@ runs through an in-cluster `registry:2` populated with the bundled
 - Release upgrades: the installer **aborts if Helm release `openan` already
   exists** (`scripts/install.sh:516-520`); redeploy = uninstall + install.
 - The online/interactive line and the Compose line (see
-  `online-install-architecture.md` and `offline-install-compose-architecture.md`).
+  `online-install-architecture.en.md` and `offline-install-compose-architecture.en.md`).
 
 ---
 
@@ -144,7 +146,7 @@ flowchart LR
   MetalLB pool, containerd trust, per-arch image tars, NTP/disk; optional
   LLM probe. `--soft` never exits non-zero.
 - **Confirm + persist**: the effective configuration round-trips to
-  `config.env` (all 33 keys, chmod 600) so re-runs are non-interactive.
+  `config.env` (all 37 keys, chmod 600) so re-runs are non-interactive.
 - **Private registry**: the only image imported directly into containerd
   (`ctr -n k8s.io images import`, `install.sh:235-243`); the registry itself
   runs from that local image with `imagePullPolicy: Never`.
@@ -261,7 +263,7 @@ flowchart TD
 
 ## 5. Configuration Contract
 
-### 5.1 config.env (38 keys)
+### 5.1 config.env (37 keys)
 
 Grouped summary (authoritative list: `config.env.example`):
 
@@ -390,56 +392,7 @@ architecture doc.)
 
 ---
 
-## 7. Design Decisions
-
-### D1: Why an in-cluster registry instead of loading images into each node?
-
-Helm/kubelet reference images by registry path. One `registry:2` behind a
-NodePort gives every node a single stable `${REG_HOST}/...` prefix; crane
-pushes per-arch tars and stitches manifest lists **at install time**, so the
-bundle stays per-arch tarballs (docker save cannot hold two arches in one
-archive). The tradeoff is the manual containerd trust prerequisite.
-
-### D2: Why is the registry outside the chart?
-
-The registry must exist and be populated **before** `helm install` pulls
-anything; Helm cannot bootstrap its own image source. The cost: it is
-installer-managed lifecycle (uninstall removes it explicitly) and invisible
-to `helm get manifest`.
-
-### D3: Why no upgrade path?
-
-Offline upgrades require a fresh bundle whose image digests, infra manifests
-and chart are version-locked together. `helm upgrade` over a half-transferred
-state is not certifiable, so the installer aborts on an existing release;
-redeploy = uninstall + install (uninstall preserves data by default).
-
-### D4: Why replicas 2 with sessionAffinity instead of 1 replica?
-
-The offline line favors availability of the HTTP entry over strict
-process-local correctness: RC/OC/frontend run 2 replicas with preferred
-antiAffinity, and OC's ClientIP session affinity (12h) keeps a user's
-in-memory session on one replica. The online line instead enforces 1
-replica and rejects HPA — each line picks its own contract.
-
-### D5: Why MySQL as the offline default?
-
-The bundled `mysql:8.4.3` image matches the field-standard SQL server on
-offline sites; PostgreSQL remains selectable via `DB_TYPE`. Caveat: MySQL
-mode requires an OC image with the MySQL persistence handler
-(`README.md:88-90`).
-
-### D6: Why bundled binaries and sed-rewritten manifests?
-
-Everything the installer needs must survive an air gap: helm/kubectl/crane
-are pinned in `deps/bin/` (bundle binaries win over PATH), and the MetalLB /
-ingress-nginx manifests are pinned in `deps/manifests/` with their image
-references grepped out at build time and rewritten to `REG_HOST` at install
-time — versions can never drift from the shipped images.
-
----
-
-## 8. Extensibility
+## 7. Extensibility
 
 - **New chart values**: follow `chart/README.md` (full parameter tables and
   the canonical ASCII diagram); the installer's generated
@@ -453,10 +406,3 @@ time — versions can never drift from the shipped images.
   online chart and the Compose line carry the automated contracts);
   `check-env.sh --soft` plus a dry `helm template` over the generated values
   is the practical pre-flight.
-
-### Known documentation drift (flagged for cleanup)
-
-- `build/README.md:57` and `QUICKSTART.md:102` mention a `--portal-src`
-  option that `build-offline.sh` does not have — portal is pull/tars-only.
-- `frontend.nodePort` defaults to 30191 in values but the template fallback
-  literal is 30083 (only matters if nodePort is left empty).

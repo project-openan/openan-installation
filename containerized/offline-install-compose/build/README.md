@@ -19,6 +19,10 @@ openan-offline-compose-<tag>/
 ├── scripts/           install.sh, check-env.sh, uninstall.sh, configure.py
 ├── compose/init/      Database initialization scripts (create-databases.sh, create-mysql-databases.sh)
 ├── web/               Frontend static files (extracted from the workflow-designer image)
+├── config.env.example Configuration template (copied and filled per QUICKSTART Step 3)
+├── templates/         Config templates (env files, models.yaml, integration credentials)
+├── README.md          Line README
+├── docs/DEPENDENCIES.md Prerequisite reference
 └── SHA256SUMS
 ```
 
