@@ -184,9 +184,10 @@ The installer will:
 kubectl -n openan get pods,svc,ingress
 ```
 
-The installer prints the access URL at the end — either the MetalLB
-LoadBalancer IP (`http://<LB_IP>/`) or a NodePort fallback
-(`http://<node-ip>:<nodePort>/`).
+The installer prints the access URL at the end: `https://<INGRESS_HOST>/`
+when `INGRESS_HOST` is set (HTTPS is on by default — DNS name or IP),
+otherwise the MetalLB LoadBalancer IP (`http://<LB_IP>/`) or a NodePort
+fallback (`http://<node-ip>:<nodePort>/`).
 
 > An alternative entry — an external load balancer targeting a **fixed node IP
 > and NodePorts** (no MetalLB, no virtual IP) — is described in
@@ -387,9 +388,13 @@ self-signed CA plus per-service certificates with `tool/gen_certs.py` (openssl;
 needs `openssl` and `python3` on the install node) and stores them as Secrets
 `openan-rc-tls` / `openan-oc-tls` / `openan-ingress-client` — and
 `openan-public-tls` when `INGRESS_HOST` is set, which also enables public
-HTTPS on the ingress. The ingress always verifies backend server certificates
-against the shared CA (`proxy-ssl-verify` on). Probes, the frontend upstream
-and the ingress backend protocol switch automatically.
+HTTPS on the ingress. `INGRESS_HOST` accepts a DNS name **or a bare IP**
+(MetalLB VIP or node IP); the certificate is generated with the matching SANs
+and the access URL is `https://<INGRESS_HOST>/` (IP entries carry no SNI and
+are served by the ingress-nginx default TLS server). The ingress always
+verifies backend server certificates against the shared CA
+(`proxy-ssl-verify` on). Probes, the frontend upstream and the ingress
+backend protocol switch automatically.
 
 To use your own certificates instead, pre-create the Secrets and set
 `RC_TLS_SECRET`, `OC_TLS_SECRET` and `INGRESS_CLIENT_SECRET` in `config.env`
