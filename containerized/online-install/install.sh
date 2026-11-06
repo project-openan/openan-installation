@@ -416,6 +416,7 @@ if [ -e "$VALUES" ]; then
     log_warn "Found existing $VALUES"
     if ask_yes_no "Regenerate the configuration from scratch (removes this file and re-runs the wizard)?" "no"; then
         rm "$VALUES"
+        log_info "Removed $VALUES; re-running the wizard."
     else
         log_info "Keeping $VALUES; redeploy it with: ./install.sh --values $VALUES --release $RELEASE --namespace $NAMESPACE --skip-build --skip-infra"
         exit 0
