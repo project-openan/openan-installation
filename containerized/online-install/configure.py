@@ -20,6 +20,7 @@ import getpass
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -434,8 +435,77 @@ def configure(namespace, release, output, tag=None):
     if oc_runtime:
         create_secret(namespace, prefix + "oc-runtime", oc_runtime)
 
+    # --- HTTPS (optional, self-signed) ---------------------------------------
+    https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "no")
+    https_config = {}
+    if https_enabled == "yes":
+        # Generate self-signed certificates using the bundled gen_certs.py tool.
+        # The tool requires the registry-center source tree (CertificateGenerator).
+        cert_dir = output.parent / "certs"
+        cert_dir.mkdir(exist_ok=True)
+        script_dir = Path(__file__).resolve().parent
+        gen_script = script_dir / "tool" / "gen_certs.py"
+        if not gen_script.is_file():
+            raise ValueError(f"gen_certs.py not found at {gen_script}")
+        gen_cmd = [
+            sys.executable, str(gen_script),
+            "--out", str(cert_dir),
+            "--namespace", namespace,
+        ]
+        # Discover the LoadBalancer IP for the ingress SAN, if already assigned.
+        lb_ip = subprocess.run(
+            ["kubectl", "get", "svc", "-n", "ingress-nginx", "ingress-nginx-controller",
+             "-o", "jsonpath={.status.loadBalancer.ingress[0].ip}"],
+            capture_output=True, text=True)
+        if lb_ip.returncode == 0 and lb_ip.stdout.strip():
+            gen_cmd += ["--ingress-ip", lb_ip.stdout.strip()]
+        rc_src = os.environ.get("OPENAN_REGISTRY_CENTER_SRC", "")
+        if rc_src:
+            gen_cmd += ["--registry-center-src", rc_src]
+        result = subprocess.run(gen_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Certificate generation failed: {result.stderr.strip()}")
+        print(f"  Certificates generated in {cert_dir}")
+
+        # Create TLS Secrets for each component.
+        create_secret(namespace, prefix + "rc-tls", {
+            "server.cer": (cert_dir / "registry-center" / "server.cer").read_text(),
+            "server_key.pem": (cert_dir / "registry-center" / "server_key.pem").read_text(),
+            "cert_pwd": (cert_dir / "registry-center" / "cert_pwd").read_text(),
+            "trust.cer": (cert_dir / "registry-center" / "trust.cer").read_text(),
+        })
+        create_secret(namespace, prefix + "oc-tls", {
+            "server.cer": (cert_dir / "orchestration-center" / "server.cer").read_text(),
+            "server_key.pem": (cert_dir / "orchestration-center" / "server_key.pem").read_text(),
+            "cert_pwd": (cert_dir / "orchestration-center" / "cert_pwd").read_text(),
+            "trust.cer": (cert_dir / "orchestration-center" / "trust.cer").read_text(),
+        })
+        create_secret(namespace, prefix + "ingress-client", {
+            "tls.crt": (cert_dir / "ingress-client" / "tls.crt").read_text(),
+            "tls.key": (cert_dir / "ingress-client" / "tls.key").read_text(),
+            "ca.crt": (cert_dir / "ca" / "ca.cer").read_text(),
+        })
+        create_secret(namespace, prefix + "registry-client", {
+            "trust.cer": (cert_dir / "ca" / "ca.cer").read_text(),
+            "client.cer": (cert_dir / "ingress-client" / "tls.crt").read_text(),
+            "client_key.pem": (cert_dir / "ingress-client" / "tls.key").read_text(),
+        })
+        create_secret(namespace, prefix + "public-tls", {
+            "tls.crt": (cert_dir / "ingress" / "tls.crt").read_text(),
+            "tls.key": (cert_dir / "ingress" / "tls.key").read_text(),
+        })
+        https_config = {
+            "tls": {"enabled": True, "verifyClient": False},
+            "backendTls": {"verifyServer": True, "existingSecret": prefix + "ingress-client"},
+        }
+
     # --- Assemble non-secret values -------------------------------------------
-    values = {"namespace": namespace, "frontend": {"image": {"tag": tags["frontend"]}},
+    frontend_values = {"image": {"tag": tags["frontend"]}}
+    if components["orchestration"]:
+        frontend_values["type"] = frontend_type or "workflow-designer"
+    if https_enabled == "yes":
+        frontend_values.update(https_config.get("backendTls", {}))
+    values = {"namespace": namespace, "frontend": frontend_values,
               "postgresql": {"enabled": True, "existingSecret": prefix + "pg"},
               "database": {"type": "postgresql"}}
     if storage_node is not None:
@@ -447,6 +517,10 @@ def configure(namespace, release, output, tag=None):
         values["registry"] = {"runtimeSecret": prefix + "rc-runtime",
                               "credentialSecret": prefix + "rc-credentials",
                               "modelsConfigMap": models_ref.get("registry", ""), "image": {"tag": tags["registry"]}}
+        if https_enabled == "yes":
+            values["registry"]["tls"] = {"enabled": True, "verifyClient": False,
+                                          "mode": "secret", "existingSecret": prefix + "rc-tls"}
+            values["registry"]["ingressClientSecret"] = prefix + "ingress-client"
         if signing_ref:
             values["registry"]["signing"] = {"mode": "secret", "existingSecret": signing_ref}
         else:
@@ -461,6 +535,12 @@ def configure(namespace, release, output, tag=None):
         values["orchestration"] = {"runtimeSecret": prefix + "oc-runtime",
                                    "modelsConfigMap": models_ref.get("orchestration", ""),
                                    "image": {"tag": tags["orchestration"]}}
+        if https_enabled == "yes":
+            values["orchestration"]["tls"] = {"enabled": True, "verifyClient": False,
+                                               "mode": "secret", "existingSecret": prefix + "oc-tls"}
+            values["orchestration"]["ingressClientSecret"] = prefix + "ingress-client"
+            values["orchestration"]["clientVerifyServer"] = True
+            values["orchestration"]["registryClientSecret"] = prefix + "registry-client"
         if agent_registry_url:
             values["orchestration"]["agentRegistryUrl"] = agent_registry_url
         if a2at:
@@ -475,6 +555,8 @@ def configure(namespace, release, output, tag=None):
         values["orchestration"] = {"enabled": False}
         values["frontend"] = {"enabled": False, "image": {"tag": tags["frontend"]}}
     values["ingress"] = {"host": ""}
+    if https_enabled == "yes":
+        values["ingress"]["tls"] = {"enabled": True, "secretName": prefix + "public-tls"}
 
     # Only non-secret JSON/YAML-compatible values. Exclusive creation preserves operator files.
     with output.open("x", encoding="utf-8") as stream:

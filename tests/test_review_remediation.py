@@ -167,7 +167,7 @@ def test_wizard_generated_values_contain_references_not_credentials(tmp_path, mo
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     saved = {}
@@ -200,7 +200,7 @@ def test_wizard_in_cluster_default_values_shape(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     saved = {}
@@ -308,7 +308,7 @@ def test_wizard_rejects_missing_public_dependencies_before_secrets(tmp_path, mon
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0", "my-signing-secret"],
-        chooses=["all", "workflow-designer", "skip", "secret"],
+        chooses=["all", "workflow-designer", "skip", "secret", "no"],
         secrets=None,
     )
     # kubectl get returns non-zero -> reference check fails
@@ -332,7 +332,7 @@ def test_wizard_local_storage_fallback_values(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     # No default StorageClass and a detectable node: the fallback engages
@@ -359,7 +359,7 @@ def test_wizard_per_component_image_tags(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.1.2", "main-20261019", "v2.0.0"],
-        chooses=["all", "portal", "skip", "auto"],
+        chooses=["all", "portal", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     monkeypatch.setattr(module, "create_secret", lambda *args: None)
@@ -378,7 +378,7 @@ def test_wizard_frontend_workflow_designer_follows_orchestration_tag(tmp_path, m
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.1.2", "main-20261019"],
-        chooses=["all", "workflow-designer", "skip", "auto"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     monkeypatch.setattr(module, "create_secret", lambda *args: None)
@@ -403,7 +403,7 @@ def test_wizard_optional_models_and_a2at_land_in_values_and_secrets(tmp_path, mo
             "https://llm.example/v1/embeddings",   # embed URL
             "https://api.example.com/v1",          # a2at URL
         ],
-        chooses=["all", "workflow-designer", "now", "yes", "auto"],
+        chooses=["all", "workflow-designer", "now", "yes", "auto", "no"],
         secrets=[
             "rc-chat-key", "rc-embed-key",       # registry chat + embed keys
             "a2at-key",                           # a2at key
