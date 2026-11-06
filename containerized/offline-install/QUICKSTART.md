@@ -384,7 +384,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 `HTTPS_ENABLED` defaults to `"true"`: registry-center and orchestration-center
 are served over TLS inside the cluster. By default the installer generates a
-self-signed CA plus per-service certificates with `tool/gen_certs.py` (openssl;
+self-signed CA plus per-service certificates with `tool/gen_certs_offline.py` (openssl;
 needs `openssl` and `python3` on the install node) and stores them as Secrets
 `openan-rc-tls` / `openan-oc-tls` / `openan-ingress-client` — and
 `openan-public-tls` when `INGRESS_HOST` is set, which also enables public

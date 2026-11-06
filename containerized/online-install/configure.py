@@ -4,12 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Guided evaluation configuration; secrets only in memory and kubectl stdin.
 
-Simplified wizard: components → image tags (shared or per-component) → LLM
-(once, reuse for both) → signing → admin password. Everything else is
-automatic evaluation mode: in-cluster PostgreSQL, storage on the cluster's
-default StorageClass (automatic node-pinned local hostPath fallback when none
-exists), auto signing, generated models.yaml, and the empty catch-all Ingress
-host for direct LB-IP access.
+Interactive wizard: components -> image tags -> LLM -> signing -> secrets.
+Everything else is automatic evaluation mode: in-cluster PostgreSQL, storage
+on the cluster's default StorageClass (automatic node-pinned local hostPath
+fallback when none exists), auto signing, generated models.yaml, and the
+empty catch-all Ingress host for direct LB-IP access.
 
 Production profiles (external SQL, HTTPS, host-based routing) use reviewed
 values (see example.values.yaml) and existing Secrets instead. No defaults
@@ -21,14 +20,18 @@ import getpass
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 
 COMPONENTS = ("registry", "orchestration")
+
+MAX_ATTEMPTS = 3
 
 
 def _kubectl_json(args, stdin=None):
@@ -64,35 +67,71 @@ def create_configmap(namespace, name, data):
         raise RuntimeError(f"Creating ConfigMap '{name}' failed; inspect Kubernetes status without exposing credentials")
 
 
-def ask(label):
-    value = input(label + ": ").strip()
-    if not value:
-        raise ValueError("Every requested non-secret field is required")
-    return value
+def step_banner(step, total, title):
+    print()
+    print(f"  {'=' * 50}")
+    print(f"  Step {step}/{total}: {title}")
+    print(f"  {'=' * 50}")
+    print()
+
+
+def ask(label, default="", required=True):
+    """Ask a question; empty input falls back to default if given, else retries."""
+    prompt = f"{label} [{default}]: " if default else f"{label}: "
+    for attempt in range(MAX_ATTEMPTS):
+        value = input(prompt).strip()
+        if value:
+            return value
+        if default:
+            return default
+        if required:
+            print(f"  [WARN] {label} is required ({attempt + 1}/{MAX_ATTEMPTS})")
+    raise ValueError(f"{label} not provided after {MAX_ATTEMPTS} attempts")
 
 
 def choose(label, options, default):
-    value = input(f"{label} [{'/'.join(options)}, default: {default}]: ").strip().lower() or default
-    if value not in options:
-        raise ValueError(f"Unsupported {label} choice; pick one of: {', '.join(options)}")
-    return value
+    """Single-choice prompt; accepts full word or first-letter abbreviation."""
+    for attempt in range(MAX_ATTEMPTS):
+        raw = input(f"{label} [{'/'.join(options)}, default: {default}]: ").strip().lower()
+        if not raw:
+            return default
+        # exact match
+        if raw in options:
+            return raw
+        # first-letter abbreviation (only when unambiguous)
+        matches = [o for o in options if o.startswith(raw)]
+        if len(matches) == 1:
+            return matches[0]
+        print(f"  [WARN] '{raw}' is ambiguous or invalid; pick one of: {', '.join(options)} ({attempt + 1}/{MAX_ATTEMPTS})")
+    raise ValueError(f"{label}: unsupported choice after {MAX_ATTEMPTS} attempts")
 
 
 def secret_input(label):
-    # getpass warns and falls back to echo if no TTY; refuse that unsafe fallback.
-    import sys
+    """Password input with asterisk masking; supports backspace."""
     if not sys.stdin.isatty():
         raise ValueError("Interactive secrets require a terminal; use --values with existing Secrets in CI")
-    value = getpass.getpass(label + ": ")
+    print(f"{label}: ", end="", flush=True)
+    value = ""
+    while True:
+        ch = sys.stdin.read(1)
+        if ch in ("\n", "\r"):
+            break
+        if ch in ("\x7f", "\x08"):  # backspace
+            if value:
+                value = value[:-1]
+                print("\b \b", end="", flush=True)
+            continue
+        value += ch
+        print("*", end="", flush=True)
+    print()
     if not value:
         raise ValueError("Empty secrets are not allowed")
     return value
 
 
-def ask_default(label, default=""):
-    prompt = f"{label} [{default}]: " if default else label + ": "
-    value = input(prompt).strip()
-    return value or default
+def ask_optional(label):
+    value = input(label + " [empty to skip]: ").strip()
+    return value
 
 
 def has_default_storageclass():
@@ -126,15 +165,15 @@ def probe_llm(model, url, api_key):
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             if response.status == 200:
-                print("  LLM endpoint reachable")
+                print("  [OK] LLM endpoint reachable")
                 return True
-            print(f"  LLM endpoint answered HTTP {response.status}")
+            print(f"  [WARN] LLM endpoint answered HTTP {response.status}")
             return False
     except urllib.error.HTTPError as error:
-        print(f"  LLM endpoint answered HTTP {error.code} (check model id and API key)")
+        print(f"  [WARN] LLM endpoint answered HTTP {error.code} (check model id and API key)")
         return False
     except (urllib.error.URLError, OSError, TimeoutError) as error:
-        print(f"  LLM endpoint unreachable: {error}")
+        print(f"  [WARN] LLM endpoint unreachable: {error}")
         return False
 
 
@@ -154,11 +193,6 @@ def models_yaml(chat, embed=None, rerank=None):
     return text
 
 
-def ask_optional(label):
-    value = input(label + " [empty to skip]: ").strip()
-    return value
-
-
 def collect_optional_model(component, capability):
     """Optional embed/rerank model: model id, URL and API key."""
     model = ask_optional(f"{component} {capability} model id")
@@ -170,17 +204,20 @@ def collect_optional_model(component, capability):
 
 
 def collect_llm(component):
-    for _ in range(3):
+    """Collect chat model/URL/key with validation retry loop."""
+    for attempt in range(MAX_ATTEMPTS):
         model = ask(f"{component} chat model id")
         url = ask(f"{component} chat URL (e.g. https://api.example.com/v1/chat/completions)")
         api_key = secret_input(f"{component} chat API key")
         if probe_llm(model, url, api_key):
             break
-        if input("  Continue anyway? [y/N]: ").strip().lower() != "y":
-            continue
-        break
+        if attempt < MAX_ATTEMPTS - 1:
+            retry = input(f"  Continue anyway? [y/N]: ").strip().lower()
+            if retry in ("y", "yes"):
+                break
+            print(f"  Retrying ({attempt + 2}/{MAX_ATTEMPTS})...")
     else:
-        raise ValueError(f"LLM configuration for {component} abandoned after 3 attempts")
+        raise ValueError(f"LLM configuration for {component} abandoned after {MAX_ATTEMPTS} attempts")
     return {"chat": (model, url, api_key),
             "embed": collect_optional_model(component, "embed"),
             "rerank": collect_optional_model(component, "rerank")}
@@ -195,32 +232,53 @@ def choose_components():
     return {"registry": False, "orchestration": True}
 
 
+def generate_password(length=16):
+    """Generate a random password with lower/upper/digit/special classes."""
+    while True:
+        pwd = secrets.token_urlsafe(length)[:length]
+        if (len(pwd) >= 8
+                and re.search(r"[a-z]", pwd) and re.search(r"[A-Z]", pwd)
+                and re.search(r"[0-9]", pwd) and re.search(r"[^a-zA-Z0-9]", pwd)):
+            return pwd
+
+
 def configure(namespace, release, output, tag=None):
     if not output.parent.is_dir():
         raise ValueError("Output parent directory must already exist")
     if output.exists():
         raise ValueError("Output exists; refusing to overwrite deployment configuration")
 
-    print()
-    print("  Press Enter to accept the [default] for each prompt.")
-    print()
-
-    # --- 1. Components -------------------------------------------------------
-    components = choose_components()
-    enabled = [component for component in COMPONENTS if components[component]]
-    if not tag:
-        tag = ask("Compatible application image tag (already pushed)")
     prefix = release + "-"
 
-    # --- 1b. Image tags (shared default, or one per component) ---------------
-    tags = {"registry": tag, "orchestration": tag, "frontend": tag}
-    if choose("image tags", ["shared", "per-component"], "shared") == "per-component":
-        for name in list(enabled) + (["frontend"] if components["orchestration"] else []):
-            tags[name] = ask_default(f"{name} image tag", tag)
+    # ------------------------------------------------------------------
+    # Step 1: Components
+    # ------------------------------------------------------------------
+    step_banner(1, 5, "Component Selection")
+    components = choose_components()
+    enabled = [c for c in COMPONENTS if components[c]]
+    print(f"  -> Selected: {', '.join(enabled)}")
 
-    # --- 2. SQL and storage (automatic; not asked) ---------------------------
-    # Evaluation always uses in-cluster PostgreSQL; external SQL deployments
-    # use reviewed values (see deployment.yaml.example).
+    # ------------------------------------------------------------------
+    # Step 2: Image Tags
+    # ------------------------------------------------------------------
+    step_banner(2, 5, "Image Tags")
+    tags = {}
+    if components["registry"]:
+        tags["registry"] = ask("registry-center image tag", default=tag or "")
+    if components["orchestration"]:
+        tags["orchestration"] = ask("orchestration-center image tag", default=tag or "")
+        frontend_type = choose("frontend image", ["workflow-designer", "portal"], "workflow-designer")
+        if frontend_type == "portal":
+            tags["frontend"] = ask("portal image tag", default=tag or "")
+            print(f"  -> frontend = portal:{tags['frontend']}")
+        else:
+            tags["frontend"] = tags["orchestration"]
+            print(f"  -> frontend = workflow-designer (follows orchestration tag: {tags['frontend']})")
+
+    # ------------------------------------------------------------------
+    # Step 3: SQL and Storage (automatic)
+    # ------------------------------------------------------------------
+    step_banner(3, 5, "SQL & Storage (automatic)")
     storage_node = None
     local_storage_class = "openan-local"
     if has_default_storageclass():
@@ -231,7 +289,6 @@ def configure(namespace, release, output, tag=None):
             print(f"  Warning: leftover PV '{pv}' detected. If it still holds data (e.g. stale"
                   " pgdata), in-cluster SQL users keep their OLD passwords;"
                   " remove the PV and its hostPath data first (uninstall.sh can clean it)")
-        # Empty result must disable the fallback, not deploy a nodeless PV.
         storage_node = first_node() or None
         if storage_node:
             print(f"  Local evaluation storage: {local_storage_class} StorageClass +"
@@ -241,48 +298,55 @@ def configure(namespace, release, output, tag=None):
             print("  Warning: no node name detectable; claims are left unbound."
                   " Provide a StorageClass or configure persistence in reviewed values")
 
-    # --- 3. LLM (ask once, offer to reuse) ---------------------------------
+    # ------------------------------------------------------------------
+    # Step 4: LLM Configuration
+    # ------------------------------------------------------------------
+    step_banner(4, 5, "LLM Configuration")
     llm = {}
     a2at = None
-    models_mode = choose("models.yaml source", ["generate", "existing"], "generate")
     models_ref = {}
-    if models_mode == "existing":
-        models_ref = {component: ask(component + " existing models.yaml ConfigMap") for component in enabled}
-    elif enabled:
-        # Ask for the first component, then offer to reuse
+
+    configure_llm = choose("Configure LLM now", ["now", "skip"], "now")
+    if configure_llm == "now":
         first = enabled[0]
         llm[first] = collect_llm(first)
         for other in enabled[1:]:
-            reuse = choose(f"use same LLM for {other}", ["yes", "no"], "yes")
+            reuse = choose(f"Use same LLM for {other}", ["yes", "no"], "yes")
             if reuse == "no":
                 llm[other] = collect_llm(other)
             else:
                 llm[other] = llm[first]
-    if components["orchestration"]:
-        # A2A-T SDK negotiation LLM (workflow execution), independent of
-        # models.yaml: env-based, provider stays "openai" per upstream docs.
-        a2at_model = ask_optional("A2A-T SDK negotiation model (workflow execution)")
-        if a2at_model:
-            a2at_url = ask("A2A-T SDK base URL (e.g. https://api.example.com/v1)")
-            a2at_key = secret_input("A2A-T SDK API key")
-            a2at = {"model": a2at_model, "baseUrl": a2at_url, "key": a2at_key}
+                print(f"  -> {other} reuses {first}'s LLM config")
 
-    # --- 4. Signing (auto default, one question) ----------------------------
+        if components["orchestration"]:
+            a2at_model = ask_optional("A2A-T SDK negotiation model (workflow execution)")
+            if a2at_model:
+                a2at_url = ask("A2A-T SDK base URL (e.g. https://api.example.com/v1)")
+                a2at_key = secret_input("A2A-T SDK API key")
+                a2at = {"model": a2at_model, "baseUrl": a2at_url, "key": a2at_key}
+    else:
+        print("  LLM configuration skipped. models.yaml will use placeholder values.")
+        print("  Run configure.py again or use reviewed values to configure LLM later.")
+
+    # ------------------------------------------------------------------
+    # Step 5: Signing & Secrets
+    # ------------------------------------------------------------------
+    step_banner(5, 5, "Signing & Secrets")
+
     signing_ref = None
     if components["registry"]:
-        if choose("registry signing material", ["auto", "secret"], "auto") == "secret":
+        if choose("Registry signing material", ["auto", "secret"], "auto") == "secret":
             signing_ref = ask("Existing registry signing Secret (sign.cer, sign_key.pem, cert_pwd)")
 
     agent_registry_url = None
     if components["orchestration"] and not components["registry"]:
-        agent_registry_url = ask("External agent registry URL for orchestration (http(s)://...)")
-        if not re.match(r"^https?://", agent_registry_url):
+        for attempt in range(MAX_ATTEMPTS):
+            agent_registry_url = ask("External agent registry URL for orchestration (http(s)://...)")
+            if re.match(r"^https?://", agent_registry_url):
+                break
+            print(f"  [WARN] URL must start with http:// or https:// ({attempt + 1}/{MAX_ATTEMPTS})")
+        else:
             raise ValueError("Agent registry URL must start with http:// or https://")
-
-    # The Ingress host is not asked: the evaluation wizard always uses the
-    # empty catch-all host so the platform is reachable directly at the
-    # LoadBalancer IP. Host-based routing / HTTPS need reviewed values
-    # (ingress.host must be a DNS name; Kubernetes rejects IP hosts).
 
     # Check public references before collecting/creating any credentials.
     checks = [("configmap", name) for name in models_ref.values()]
@@ -293,20 +357,32 @@ def configure(namespace, release, output, tag=None):
         if result.returncode:
             raise ValueError(f"Required model/signing reference is missing or inaccessible: {name}")
 
-    # --- 5. Secrets collection ----------------------------------------------
     print()
     print("  Setting up secrets (input is hidden)...")
     print()
 
-    in_cluster_password = secret_input("PostgreSQL password (shared by the seeded app users)")
-    if len(in_cluster_password) < 8:
-        raise ValueError("PostgreSQL password requires at least 8 characters")
+    # PostgreSQL password
+    for attempt in range(MAX_ATTEMPTS):
+        in_cluster_password = secret_input("PostgreSQL password (8+ characters)")
+        if len(in_cluster_password) >= 8:
+            break
+        print(f"  [WARN] Password must be at least 8 characters ({attempt + 1}/{MAX_ATTEMPTS})")
+    else:
+        raise ValueError("PostgreSQL password must be at least 8 characters")
 
+    # Admin password
     admin = None
     if components["orchestration"]:
-        admin = secret_input("Initial admin password (change it in the web UI before API use)")
-        if len(admin) < 8 or not all(re.search(p, admin) for p in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^a-zA-Z0-9]")):
-            raise ValueError("Initial password requires 8+ characters and lower/upper/digit/special classes")
+        pwd_hint = "8+ chars, lower/upper/digit/special"
+        for attempt in range(MAX_ATTEMPTS):
+            admin = secret_input(f"Initial admin password ({pwd_hint})")
+            if (len(admin) >= 8
+                    and re.search(r"[a-z]", admin) and re.search(r"[A-Z]", admin)
+                    and re.search(r"[0-9]", admin) and re.search(r"[^a-zA-Z0-9]", admin)):
+                break
+            print(f"  [WARN] Password does not meet requirements ({pwd_hint}) ({attempt + 1}/{MAX_ATTEMPTS})")
+        else:
+            raise ValueError(f"Admin password does not meet requirements: {pwd_hint}")
 
     # --- Service-token machinery (registry <-> orchestration pairing) ---------
     token = hmac_key = fingerprint = credential = None
@@ -324,7 +400,8 @@ def configure(namespace, release, output, tag=None):
 
     # --- Create Secrets / ConfigMaps -----------------------------------------
     create_secret(namespace, prefix + "pg", {"postgres-password": in_cluster_password})
-    if models_mode == "generate":
+
+    if configure_llm == "now":
         for component in enabled:
             name = prefix + ("rc-models" if component == "registry" else "oc-models")
             create_configmap(namespace, name,
@@ -335,7 +412,7 @@ def configure(namespace, release, output, tag=None):
 
     rc_runtime = {"INTEGRATION_TOKEN_HMAC_KEY": hmac_key, "INTEGRATION_FINGERPRINT_KEY": fingerprint} \
         if components["registry"] else None
-    if rc_runtime is not None and models_mode == "generate" and components["registry"]:
+    if rc_runtime is not None and configure_llm == "now" and components["registry"]:
         rc_runtime["LLM_CHAT_API_KEY"] = llm["registry"]["chat"][2]
         for capability in ("embed", "rerank"):
             if llm["registry"][capability]:
@@ -345,7 +422,7 @@ def configure(namespace, release, output, tag=None):
         oc_runtime["OC_ADMIN_INITIAL_PASSWORD"] = admin
         if components["registry"]:
             oc_runtime["REGISTRY_ACCESS_TOKEN"] = token
-        if models_mode == "generate" and components["orchestration"]:
+        if configure_llm == "now" and components["orchestration"]:
             oc_runtime["LLM_CHAT_API_KEY"] = llm["orchestration"]["chat"][2]
             for capability in ("embed", "rerank"):
                 if llm["orchestration"][capability]:
@@ -358,8 +435,77 @@ def configure(namespace, release, output, tag=None):
     if oc_runtime:
         create_secret(namespace, prefix + "oc-runtime", oc_runtime)
 
+    # --- HTTPS (optional, self-signed) ---------------------------------------
+    https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "yes")
+    https_config = {}
+    if https_enabled == "yes":
+        # Generate self-signed certificates using the bundled gen_certs.py tool.
+        # The tool requires the registry-center source tree (CertificateGenerator).
+        cert_dir = output.parent / "certs"
+        cert_dir.mkdir(exist_ok=True)
+        script_dir = Path(__file__).resolve().parent.parent
+        gen_script = script_dir / "tool" / "gen_certs.py"
+        if not gen_script.is_file():
+            raise ValueError(f"gen_certs.py not found at {gen_script}")
+        gen_cmd = [
+            sys.executable, str(gen_script),
+            "--out", str(cert_dir),
+            "--namespace", namespace,
+        ]
+        # Discover the LoadBalancer IP for the ingress SAN, if already assigned.
+        lb_ip = subprocess.run(
+            ["kubectl", "get", "svc", "-n", "ingress-nginx", "ingress-nginx-controller",
+             "-o", "jsonpath={.status.loadBalancer.ingress[0].ip}"],
+            capture_output=True, text=True)
+        if lb_ip.returncode == 0 and lb_ip.stdout.strip():
+            gen_cmd += ["--ingress-ip", lb_ip.stdout.strip()]
+        rc_src = os.environ.get("OPENAN_REGISTRY_CENTER_SRC", "")
+        if rc_src:
+            gen_cmd += ["--registry-center-src", rc_src]
+        result = subprocess.run(gen_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Certificate generation failed: {result.stderr.strip()}")
+        print(f"  Certificates generated in {cert_dir}")
+
+        # Create TLS Secrets for each component.
+        create_secret(namespace, prefix + "rc-tls", {
+            "server.cer": (cert_dir / "registry-center" / "server.cer").read_text(),
+            "server_key.pem": (cert_dir / "registry-center" / "server_key.pem").read_text(),
+            "cert_pwd": (cert_dir / "registry-center" / "cert_pwd").read_text(),
+            "trust.cer": (cert_dir / "registry-center" / "trust.cer").read_text(),
+        })
+        create_secret(namespace, prefix + "oc-tls", {
+            "server.cer": (cert_dir / "orchestration-center" / "server.cer").read_text(),
+            "server_key.pem": (cert_dir / "orchestration-center" / "server_key.pem").read_text(),
+            "cert_pwd": (cert_dir / "orchestration-center" / "cert_pwd").read_text(),
+            "trust.cer": (cert_dir / "orchestration-center" / "trust.cer").read_text(),
+        })
+        create_secret(namespace, prefix + "ingress-client", {
+            "tls.crt": (cert_dir / "ingress-client" / "tls.crt").read_text(),
+            "tls.key": (cert_dir / "ingress-client" / "tls.key").read_text(),
+            "ca.crt": (cert_dir / "ca" / "ca.cer").read_text(),
+        })
+        create_secret(namespace, prefix + "registry-client", {
+            "trust.cer": (cert_dir / "ca" / "ca.cer").read_text(),
+            "client.cer": (cert_dir / "ingress-client" / "tls.crt").read_text(),
+            "client_key.pem": (cert_dir / "ingress-client" / "tls.key").read_text(),
+        })
+        create_secret(namespace, prefix + "public-tls", {
+            "tls.crt": (cert_dir / "ingress" / "tls.crt").read_text(),
+            "tls.key": (cert_dir / "ingress" / "tls.key").read_text(),
+        })
+        https_config = {
+            "tls": {"enabled": True, "verifyClient": False},
+            "backendTls": {"verifyServer": True, "existingSecret": prefix + "ingress-client"},
+        }
+
     # --- Assemble non-secret values -------------------------------------------
-    values = {"namespace": namespace, "frontend": {"image": {"tag": tags["frontend"]}},
+    frontend_values = {"image": {"tag": tags["frontend"]}}
+    if components["orchestration"]:
+        frontend_values["type"] = frontend_type or "workflow-designer"
+    if https_enabled == "yes":
+        frontend_values.update(https_config.get("backendTls", {}))
+    values = {"namespace": namespace, "frontend": frontend_values,
               "postgresql": {"enabled": True, "existingSecret": prefix + "pg"},
               "database": {"type": "postgresql"}}
     if storage_node is not None:
@@ -370,7 +516,11 @@ def configure(namespace, release, output, tag=None):
     if components["registry"]:
         values["registry"] = {"runtimeSecret": prefix + "rc-runtime",
                               "credentialSecret": prefix + "rc-credentials",
-                              "modelsConfigMap": models_ref["registry"], "image": {"tag": tags["registry"]}}
+                              "modelsConfigMap": models_ref.get("registry", ""), "image": {"tag": tags["registry"]}}
+        if https_enabled == "yes":
+            values["registry"]["tls"] = {"enabled": True, "verifyClient": False,
+                                          "mode": "secret", "existingSecret": prefix + "rc-tls"}
+            values["registry"]["ingressClientSecret"] = prefix + "ingress-client"
         if signing_ref:
             values["registry"]["signing"] = {"mode": "secret", "existingSecret": signing_ref}
         else:
@@ -383,8 +533,14 @@ def configure(namespace, release, output, tag=None):
         values["registry"] = {"enabled": False}
     if components["orchestration"]:
         values["orchestration"] = {"runtimeSecret": prefix + "oc-runtime",
-                                   "modelsConfigMap": models_ref["orchestration"],
+                                   "modelsConfigMap": models_ref.get("orchestration", ""),
                                    "image": {"tag": tags["orchestration"]}}
+        if https_enabled == "yes":
+            values["orchestration"]["tls"] = {"enabled": True, "verifyClient": False,
+                                               "mode": "secret", "existingSecret": prefix + "oc-tls"}
+            values["orchestration"]["ingressClientSecret"] = prefix + "ingress-client"
+            values["orchestration"]["clientVerifyServer"] = True
+            values["orchestration"]["registryClientSecret"] = prefix + "registry-client"
         if agent_registry_url:
             values["orchestration"]["agentRegistryUrl"] = agent_registry_url
         if a2at:
@@ -399,6 +555,8 @@ def configure(namespace, release, output, tag=None):
         values["orchestration"] = {"enabled": False}
         values["frontend"] = {"enabled": False, "image": {"tag": tags["frontend"]}}
     values["ingress"] = {"host": ""}
+    if https_enabled == "yes":
+        values["ingress"]["tls"] = {"enabled": True, "secretName": prefix + "public-tls"}
 
     # Only non-secret JSON/YAML-compatible values. Exclusive creation preserves operator files.
     with output.open("x", encoding="utf-8") as stream:
@@ -411,7 +569,7 @@ if __name__ == "__main__":
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--release", required=True)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--tag", help="Application image tag; skips the interactive tag question")
+    parser.add_argument("--tag", help="Default image tag for components that don't specify one")
     args = parser.parse_args()
     for name in (args.namespace, args.release):
         if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", name) or len(name) > 53:

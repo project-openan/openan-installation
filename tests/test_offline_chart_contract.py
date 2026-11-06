@@ -522,7 +522,7 @@ def test_gen_certs_tool_builds_a_verifiable_chain(tmp_path):
     openssl = shutil.which("openssl")
     if not openssl:
         pytest.skip("openssl unavailable")
-    tool = ROOT / "containerized/offline-install/tool/gen_certs.py"
+    tool = ROOT / "tool/gen_certs_offline.py"
     out = tmp_path / "certs"
     command = [sys.executable, str(tool), "--out", str(out), "--namespace", "openan",
                "--ingress-host", "openan.test", "--ingress-ip", "192.0.2.10",

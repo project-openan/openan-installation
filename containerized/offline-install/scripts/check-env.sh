@@ -16,6 +16,8 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Shared tools live at the repo root, one level up from the bundle.
+REPO_ROOT="$(cd "$BUNDLE_DIR/../.." && pwd)"
 # shellcheck source=lib/common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 
@@ -101,17 +103,17 @@ else
         if have openssl; then
             pass "openssl present (self-signed certificate generation)"
         else
-            fail "openssl not found — required to generate certificates (tool/gen_certs.py)"
+            fail "openssl not found — required to generate certificates (tool/gen_certs_offline.py)"
         fi
         if have python3; then
-            pass "python3 present (tool/gen_certs.py)"
+            pass "python3 present (tool/gen_certs_offline.py)"
         else
-            fail "python3 not found — required to generate certificates (tool/gen_certs.py)"
+            fail "python3 not found — required to generate certificates (tool/gen_certs_offline.py)"
         fi
-        if [ -x "$BUNDLE_DIR/tool/gen_certs.py" ] || [ -f "$BUNDLE_DIR/tool/gen_certs.py" ]; then
-            pass "tool/gen_certs.py bundled"
+        if [ -x "$REPO_ROOT/tool/gen_certs_offline.py" ] || [ -f "$REPO_ROOT/tool/gen_certs_offline.py" ]; then
+            pass "tool/gen_certs_offline.py bundled"
         else
-            fail "tool/gen_certs.py missing from the bundle"
+            fail "tool/gen_certs_offline.py missing from the bundle"
         fi
     fi
 fi

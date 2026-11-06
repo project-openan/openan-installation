@@ -107,6 +107,33 @@ def wizard():
     return module
 
 
+def _mock_wizard(monkeypatch, module, *, asks=None, chooses=None, secrets=None, optional=None, probe=True):
+    """Wire monkeypatch mocks for the new wizard interaction model.
+
+    ask() now takes (label, default="", required=True); choose() takes
+    (label, options, default); secret_input() takes (label).  Each category
+    has its own iterable consumed in call order, so tests don't depend on
+    interleaving between ask/choose/secret/optional.
+    """
+    if asks is not None:
+        asks = iter(asks)
+        monkeypatch.setattr(module, "ask", lambda *a, **kw: next(asks))
+    if chooses is not None:
+        chooses = iter(chooses)
+        monkeypatch.setattr(module, "choose", lambda *a, **kw: next(chooses))
+    if optional is not None:
+        optional = iter(optional)
+        monkeypatch.setattr(module, "ask_optional", lambda *a, **kw: next(optional))
+    else:
+        monkeypatch.setattr(module, "ask_optional", lambda *a, **kw: "")
+    if secrets is not None:
+        secrets = iter(secrets)
+        monkeypatch.setattr(module, "secret_input", lambda *a, **kw: next(secrets))
+    else:
+        monkeypatch.setattr(module, "secret_input", lambda *a, **kw: "SyntheticSecret9!")
+    monkeypatch.setattr(module, "probe_llm", lambda model, url, key: probe)
+
+
 def test_wizard_secret_only_uses_stdin_and_sanitizes_errors(monkeypatch):
     module = wizard()
     calls = []
@@ -136,12 +163,13 @@ def test_wizard_never_overwrites_an_existing_secret(monkeypatch):
 
 def test_wizard_generated_values_contain_references_not_credentials(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "tested", "shared", "existing", "rc-models", "oc-models", "secret",
-                    "signing"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: "")
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
-    monkeypatch.setattr(module, "secret_input", lambda _: "SyntheticSecret9!")
+    # Interaction: components=all, tags, frontend, LLM=skip, signing=auto
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
     saved = {}
     monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
     monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "{}", ""))
@@ -169,16 +197,17 @@ def test_offline_k8s_entrypoints_are_not_sealed():
 
 def test_wizard_in_cluster_default_values_shape(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "shared", "existing", "rc-models", "oc-models", "auto"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: "")
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
-    monkeypatch.setattr(module, "secret_input", lambda _: "SyntheticSecret9!")
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
     saved = {}
     monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
     monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
     output = tmp_path / "values.json"
-    module.configure("openan", "openan", output, tag="tested")
+    module.configure("openan", "openan", output)
     text = output.read_text(encoding="utf-8")
     values = json.loads(text)
     assert values["postgresql"] == {"enabled": True, "existingSecret": "openan-pg"}
@@ -186,23 +215,24 @@ def test_wizard_in_cluster_default_values_shape(tmp_path, monkeypatch):
     assert values["registry"]["signing"] == {"mode": "auto"}
     # Not asked anymore: evaluation always uses the catch-all host (LB-IP access)
     assert values["ingress"] == {"host": ""}
-    assert saved["openan-pg"] == {"postgres-password": "SyntheticSecret9!"}
-    assert "SyntheticSecret9!" not in text
+    assert saved["openan-pg"] == {"postgres-password": "PgSecret123!"}
+    assert "PgSecret123!" not in text
 
 
 def test_wizard_generate_models_keeps_keys_only_in_runtime_secrets(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "shared", "generate",
-                    "rc-model-id", "https://llm.example/v1/chat/completions",
-                    "no",
-                    "oc-model-id", "https://llm.example/v1/chat/completions",
-                    "auto"])
-    secrets = iter(["rc-llm-key", "oc-llm-key", "PgSecret9!", "AdminPassw0rd!xy"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: "")  # embed/rerank/a2at skipped
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
-    monkeypatch.setattr(module, "secret_input", lambda _: next(secrets))
-    monkeypatch.setattr(module, "probe_llm", lambda model, url, key: True)
+    # Interaction: all, tags, frontend, LLM=now + chat model/URL + reuse + no embed/rerank
+    # + no a2at, signing=auto
+    _mock_wizard(
+        monkeypatch, module,
+        asks=[
+            "v1.0.0", "v1.0.0",
+            "rc-model-id", "https://llm.example/v1/chat/completions",
+        ],
+        chooses=["all", "workflow-designer", "now", "yes", "no", "no", "auto"],
+        secrets=["rc-llm-key", "PgSecret9!", "AdminPassw0rd!xy"],
+        optional=iter(["", "", ""]),           # embed/rerank/a2at all skipped
+    )
     saved, configmaps = {}, {}
     monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
     monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: configmaps.update({name: data}))
@@ -215,15 +245,15 @@ def test_wizard_generate_models_keeps_keys_only_in_runtime_secrets(tmp_path, mon
     rc_models = configmaps["openan-rc-models"]["models.yaml"]
     oc_models = configmaps["openan-oc-models"]["models.yaml"]
     assert "api_key_env: LLM_CHAT_API_KEY" in rc_models and "api_key_env: LLM_CHAT_API_KEY" in oc_models
-    assert '"rc-model-id"' in rc_models and '"oc-model-id"' in oc_models
-    assert "rc-llm-key" not in rc_models and "oc-llm-key" not in oc_models
+    assert '"rc-model-id"' in rc_models and '"rc-model-id"' in oc_models
+    assert "rc-llm-key" not in rc_models and "rc-llm-key" not in oc_models
     assert values["registry"]["modelsConfigMap"] == "openan-rc-models"
     assert values["orchestration"]["modelsConfigMap"] == "openan-oc-models"
     assert saved["openan-rc-runtime"]["LLM_CHAT_API_KEY"] == "rc-llm-key"
-    assert saved["openan-oc-runtime"]["LLM_CHAT_API_KEY"] == "oc-llm-key"
+    assert saved["openan-oc-runtime"]["LLM_CHAT_API_KEY"] == "rc-llm-key"
     assert saved["openan-oc-runtime"]["OC_ADMIN_INITIAL_PASSWORD"] == "AdminPassw0rd!xy"
     assert "REGISTRY_ACCESS_TOKEN" in saved["openan-oc-runtime"]
-    for secret in ("rc-llm-key", "oc-llm-key", "AdminPassw0rd!xy", "PgSecret9!"):
+    for secret in ("rc-llm-key", "AdminPassw0rd!xy", "PgSecret9!"):
         assert secret not in text
 
 
@@ -274,13 +304,16 @@ bash "$@"
 
 def test_wizard_rejects_missing_public_dependencies_before_secrets(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "tested", "shared", "existing", "rc-models", "oc-models", "secret",
-                    "signing"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: "")
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
+    # When signing=secret the Secret name is validated BEFORE any secret is collected.
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0", "my-signing-secret"],
+        chooses=["all", "workflow-designer", "skip", "secret", "no"],
+        secrets=None,
+    )
+    # kubectl get returns non-zero -> reference check fails
     monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 1, "", ""))
-    monkeypatch.setattr(module, "secret_input", lambda _: pytest.fail("Must not collect secrets yet"))
+    monkeypatch.setattr(module, "secret_input", lambda *a, **kw: pytest.fail("Must not collect secrets yet"))
     monkeypatch.setattr(module, "create_secret", lambda *args: pytest.fail("Must not create secrets yet"))
     with pytest.raises(ValueError, match="reference"):
         module.configure("openan", "openan", tmp_path / "values.json")
@@ -296,17 +329,18 @@ def test_compose_and_helm_static_asset_policy_agree():
 
 def test_wizard_local_storage_fallback_values(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "shared", "existing", "rc-models", "oc-models", "auto"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: "")
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
     # No default StorageClass and a detectable node: the fallback engages
     # automatically (no storage question anymore).
     monkeypatch.setattr(module, "first_node", lambda: "node-1")
-    monkeypatch.setattr(module, "secret_input", lambda _: "SyntheticSecret9!")
-    saved = {}
-    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
-    monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
+    monkeypatch.setattr(module, "has_default_storageclass", lambda: False)
+    monkeypatch.setattr(module, "create_secret", lambda *args: None)
+    monkeypatch.setattr(module, "create_configmap", lambda *args: None)
     monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
     output = tmp_path / "values.json"
     module.configure("openan", "openan", output, tag="tested")
@@ -320,42 +354,63 @@ def test_wizard_local_storage_fallback_values(tmp_path, monkeypatch):
 
 def test_wizard_per_component_image_tags(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "per-component", "existing", "rc-models", "oc-models", "auto"])
-    component_tags = iter(["v1.1.2", "main-20261019", "v1.0.0"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: "")
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
-    monkeypatch.setattr(module, "ask_default", lambda label, default: next(component_tags))
-    monkeypatch.setattr(module, "secret_input", lambda _: "SyntheticSecret9!")
+    # Per-component tags: registry and orchestration get different tags, frontend=portal
+    # gets its own tag (not following orchestration).
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.1.2", "main-20261019", "v2.0.0"],
+        chooses=["all", "portal", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
     monkeypatch.setattr(module, "create_secret", lambda *args: None)
     monkeypatch.setattr(module, "create_configmap", lambda *args: None)
     monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
     output = tmp_path / "values.json"
-    module.configure("openan", "openan", output, tag="base")
+    module.configure("openan", "openan", output)
     values = json.loads(output.read_text(encoding="utf-8"))
     assert values["registry"]["image"]["tag"] == "v1.1.2"
     assert values["orchestration"]["image"]["tag"] == "main-20261019"
-    assert values["frontend"]["image"]["tag"] == "v1.0.0"
+    assert values["frontend"]["image"]["tag"] == "v2.0.0"
+
+
+def test_wizard_frontend_workflow_designer_follows_orchestration_tag(tmp_path, monkeypatch):
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.1.2", "main-20261019"],
+        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    monkeypatch.setattr(module, "create_secret", lambda *args: None)
+    monkeypatch.setattr(module, "create_configmap", lambda *args: None)
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    assert values["frontend"]["image"]["tag"] == "main-20261019"
 
 
 def test_wizard_optional_models_and_a2at_land_in_values_and_secrets(tmp_path, monkeypatch):
     module = wizard()
-    answers = iter(["all", "shared", "generate",
-                    "rc-chat-model", "https://llm.example/v1/chat/completions",
-                    "https://llm.example/v1/embeddings",
-                    "no",
-                    "oc-chat-model", "https://llm.example/v1/chat/completions",
-                    "https://llm.example/v1/embeddings",
-                    "https://api.example.com/v1",
-                    "auto"])
-    optional = iter(["rc-embed-model", "", "oc-embed-model", "", "a2at-model"])
-    secrets = iter(["rc-chat-key", "rc-embed-key", "oc-chat-key", "oc-embed-key",
-                    "a2at-key", "PgSecret9!", "AdminPassw0rd!xy"])
-    monkeypatch.setattr(module, "ask", lambda _: next(answers))
-    monkeypatch.setattr(module, "ask_optional", lambda label: next(optional))
-    monkeypatch.setattr(module, "choose", lambda label, options, default: next(answers))
-    monkeypatch.setattr(module, "secret_input", lambda _: next(secrets))
-    monkeypatch.setattr(module, "probe_llm", lambda model, url, key: True)
+    # Interaction: all, tags, frontend, LLM=now + chat + reuse=yes + embed=yes +
+    # rerank=no + a2at=yes, signing=auto
+    # a2at model goes through ask_optional; its URL goes through ask.
+    _mock_wizard(
+        monkeypatch, module,
+        asks=[
+            "v1.0.0", "v1.0.0",
+            "rc-chat-model", "https://llm.example/v1/chat/completions",
+            "https://llm.example/v1/embeddings",   # embed URL
+            "https://api.example.com/v1",          # a2at URL
+        ],
+        chooses=["all", "workflow-designer", "now", "yes", "auto", "no"],
+        secrets=[
+            "rc-chat-key", "rc-embed-key",       # registry chat + embed keys
+            "a2at-key",                           # a2at key
+            "PgSecret9!", "AdminPassw0rd!xy",
+        ],
+        optional=iter(["rc-embed-model", "", "a2at-model"]),  # embed model, rerank skip, a2at model
+    )
     saved, configmaps = {}, {}
     monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
     monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: configmaps.update({name: data}))
@@ -371,7 +426,7 @@ def test_wizard_optional_models_and_a2at_land_in_values_and_secrets(tmp_path, mo
     assert "embed:" in oc_models and "rerank:" not in oc_models
     assert saved["openan-rc-runtime"]["LLM_EMBED_API_KEY"] == "rc-embed-key"
     assert "LLM_RERANK_API_KEY" not in saved["openan-rc-runtime"]
-    assert saved["openan-oc-runtime"]["LLM_EMBED_API_KEY"] == "oc-embed-key"
+    assert saved["openan-oc-runtime"]["LLM_EMBED_API_KEY"] == "rc-embed-key"
     assert saved["openan-oc-runtime"]["A2AT_LLM_API_KEY"] == "a2at-key"
     assert values["orchestration"]["a2atLlm"] == {"provider": "openai", "model": "a2at-model",
                                                   "baseUrl": "https://api.example.com/v1"}
