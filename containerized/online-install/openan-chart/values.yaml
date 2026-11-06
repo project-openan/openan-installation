@@ -289,6 +289,9 @@ frontend:
   # Nginx configuration for workflow-designer only (frontend.type=workflow-designer).
   # Empty uses the protocol-aware managed template. Advanced overrides are Helm templates.
   nginxConfig: ""
+  # Optional node affinity (e.g. to pin the frontend away from a node with
+  # known DNS or network issues). Passed through to the Pod spec as-is.
+  nodeAffinity: {}
   # Resource limits
   resources:
     requests:

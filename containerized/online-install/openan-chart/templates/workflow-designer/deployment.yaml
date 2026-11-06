@@ -20,6 +20,104 @@ spec:
       labels:
         {{- include "openan.frontend.selectorLabels" . | nindent 8 }}
     spec:
+
+
+      {{- if .Values.frontend.nodeAffinity }}
+      affinity:
+        {{- toYaml .Values.frontend.nodeAffinity | nindent 8 }}
+      {{- end }}
+      {{- if eq (include "openan.frontendType" .) "workflow-designer" }}
+      initContainers:
+        # The stock nginx entrypoint renders /etc/nginx/templates/*.template
+        # into /etc/nginx/conf.d/, which fails when a ConfigMap is mounted
+        # there read-only. Render into an emptyDir instead and hand that to
+        # nginx; fall back to the chart's own config when the image ships no
+        # template directory.
+        - name: render-nginx-config
+          image: "{{ include "openan.frontendImageRepository" . }}:{{ .Values.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          env:
+            - name: BACKEND_SCHEME
+              value: {{ ternary "https" "http" .Values.orchestration.tls.enabled | quote }}
+            - name: BACKEND_HOST
+              value: "orchestration-center"
+            - name: BACKEND_PORT
+              value: "{{ .Values.orchestration.port }}"
+            {{- if .Values.frontend.backendTls.existingSecret }}
+            - name: BACKEND_TLS_OPTIONS
+              value: >-
+                proxy_ssl_server_name on;
+                proxy_ssl_name orchestration-center;
+                proxy_ssl_verify {{ ternary "on" "off" .Values.frontend.backendTls.verifyServer }};
+                proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer;
+                {{- if .Values.frontend.backendTls.verifyClient }}
+                proxy_ssl_certificate /etc/nginx/backend-tls/client.cer;
+                proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem;
+                {{- end }}
+            {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              if [ -f /etc/nginx/templates/default.conf.template ]; then
+                SRC=/etc/nginx/templates/default.conf.template
+              elif [ -f /cm/default.conf ]; then
+                cp /cm/default.conf /rendered/default.conf
+                echo "using ConfigMap-provided default.conf"
+                exit 0
+              else
+                echo "no nginx template or configmap found" >&2; exit 1
+              fi
+              if command -v envsubst >/dev/null 2>&1; then
+                envsubst '${BACKEND_SCHEME} ${BACKEND_HOST} ${BACKEND_PORT} ${BACKEND_TLS_OPTIONS}' < "$SRC" > /rendered/default.conf
+              else
+                sed -e "s|\${BACKEND_SCHEME}|${BACKEND_SCHEME}|g" \
+                    -e "s|\${BACKEND_HOST}|${BACKEND_HOST}|g" \
+                    -e "s|\${BACKEND_PORT}|${BACKEND_PORT}|g" \
+                    -e "s|\${BACKEND_TLS_OPTIONS}|${BACKEND_TLS_OPTIONS}|g" \
+                    "$SRC" > /rendered/default.conf
+              fi
+              echo "rendered default.conf:"
+              grep -n 'proxy_pass\|proxy_ssl' /rendered/default.conf || true
+          volumeMounts:
+            - name: nginx-conf-rendered
+              mountPath: /rendered
+            - name: nginx-config-cm
+              mountPath: /cm
+            {{- if .Values.frontend.backendTls.existingSecret }}
+            - name: backend-tls
+              mountPath: /etc/nginx/backend-tls
+              readOnly: true
+            {{- end }}
+        # Wait for the upstream Services to be resolvable before nginx starts:
+        # nginx resolves upstream hostnames at startup and exits with
+        # "host not found in upstream" when CoreDNS is not yet reachable on
+        # the node (e.g. after node reboot or CNI restart).
+        - name: wait-for-upstream
+          image: "{{ include "openan.frontendImageRepository" . }}:{{ .Values.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              for host in orchestration-center registry-center; do
+                for i in $(seq 1 60); do
+                  if getent hosts "$host" >/dev/null 2>&1; then
+                    echo "resolved $host"
+                    break
+                  fi
+                  echo "waiting for $host to resolve ($i/60)"
+                  sleep 2
+                done
+                if ! getent hosts "$host" >/dev/null 2>&1; then
+                  echo "ERROR: $host did not resolve after 120s" >&2
+                  exit 1
+                fi
+              done
+      {{- end }}
+
       containers:
         - name: openan-frontend
           image: "{{ include "openan.frontendImageRepository" . }}:{{ .Values.frontend.image.tag }}"
