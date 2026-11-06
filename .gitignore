@@ -22,3 +22,4 @@ containerized/offline-install-compose/integration_credentials.conf
 containerized/offline-install-compose/*models.yaml
 .pytest-tmp/
 outputs/
+containerized/online-install/deployment.generated.json
