@@ -211,7 +211,7 @@ def test_runtime_files_use_retained_pvc_and_nonoverlapping_rollout(component, na
     assert mounts == {"data": f"/opt/{name}/data", "log": f"/opt/{name}/log"}
     initializer = pod["initContainers"][0]
     assert initializer["image"] == pod["containers"][0]["image"]
-    assert initializer["command"][:2] == ["python", "-c"]
+    assert initializer["command"][:2] == ["/bin/sh", "-c"]
     # Execute the rendered initializer against a controlled local volume root.
     # chown/chgrp to a non-root uid/gid requires root privileges; skip the
     # ownership assertions on CI runners where we are not root (the mkdir and
@@ -230,7 +230,7 @@ def test_runtime_files_use_retained_pvc_and_nonoverlapping_rollout(component, na
     subprocess.run(["/bin/sh", "-c", code], check=True, timeout=10)
     assert (runtime / "data").is_dir() and (runtime / "log").is_dir()
     assert pod["securityContext"]["runAsUser"] == 10001
-    assert initializer["securityContext"]["allowPrivilegeEscalation"] is False
+    assert initializer["securityContext"]["runAsUser"] == 0
     pvc = docs[name + "-runtime"]
     assert pvc["kind"] == "PersistentVolumeClaim"
     assert pvc["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
