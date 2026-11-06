@@ -347,6 +347,15 @@ fi
 if kubectl get namespace ingress-nginx >/dev/null 2>&1; then
     INGRESS_PRESENT=true
 fi
+# MetalLB namespace may exist while its IPAddressPool was removed (e.g. by a
+# previous uninstall or manual cleanup); the pool is what actually assigns
+# LoadBalancer IPs, so treat a missing pool as "not present".
+if [ "$METALLB_PRESENT" = true ]; then
+    if ! kubectl get ipaddresspool openan-pool -n metallb-system >/dev/null 2>&1; then
+        log_warn "MetalLB namespace found but openan-pool IPAddressPool is missing"
+        METALLB_PRESENT=false
+    fi
+fi
 if [ "$METALLB_PRESENT" = true ] && [ "$INGRESS_PRESENT" = true ]; then
     log_info "MetalLB and ingress-nginx already installed, skipping"
 else
@@ -368,19 +377,35 @@ else
             log_error "MetalLB CRDs (ipaddresspools.metallb.io) not available after 60s"
             exit 1
         fi
-        METALLB_POOL=""
+    else
+        log_warn "Install MetalLB/ingress-nginx yourself, or rerun and answer yes; see QUICKSTART.md"
+    fi
+fi
+
+# The pool is applied unconditionally (unlike the namespace-scoped install above):
+# a previous uninstall or manual cleanup may have deleted the IPAddressPool while
+# leaving the MetalLB deployment intact, which would strand LoadBalancer services
+# in <pending> forever.
+METALLB_POOL_CFG=""
+if kubectl get ipaddresspool openan-pool -n metallb-system >/dev/null 2>&1; then
+    log_info "MetalLB pool openan-pool already exists, skipping pool configuration"
+else
+    if [ -t 0 ]; then
         for _ in 1 2 3; do
-            METALLB_POOL="$(ask_input "MetalLB IP pool (e.g. 192.168.1.200-192.168.1.250 or a CIDR, leave empty to skip)" "")"
-            [ -z "$METALLB_POOL" ] && break
-            if printf '%s' "$METALLB_POOL" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(-([0-9]{1,3}\.){3}[0-9]{1,3}|/[0-9]{1,2})?$'; then
+            METALLB_POOL_CFG="$(ask_input "MetalLB IP pool (e.g. 192.168.1.200-192.168.1.250 or a CIDR, leave empty to skip)" "")"
+            [ -z "$METALLB_POOL_CFG" ] && break
+            if printf '%s' "$METALLB_POOL_CFG" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(-([0-9]{1,3}\.){3}[0-9]{1,3}|/[0-9]{1,2})?$'; then
                 break
             fi
             log_warn "Pool must be an IP range (a.b.c.d-a.b.c.d) or a CIDR (a.b.c.d/n)"
-            METALLB_POOL=""
+            METALLB_POOL_CFG=""
         done
-        if [ -n "$METALLB_POOL" ]; then
-            log_info "Configuring MetalLB pool: $METALLB_POOL"
-            kubectl apply -f - <<EOF
+    else
+        log_warn "No terminal; skipping MetalLB pool prompt (existing pool not found)"
+    fi
+    if [ -n "$METALLB_POOL_CFG" ]; then
+        log_info "Configuring MetalLB pool: $METALLB_POOL_CFG"
+        kubectl apply -f - <<EOF
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -388,7 +413,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-  - ${METALLB_POOL}
+  - ${METALLB_POOL_CFG}
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
@@ -399,11 +424,8 @@ spec:
   ipAddressPools:
   - openan-pool
 EOF
-        else
-            log_warn "No MetalLB pool configured; LoadBalancer IPs stay pending on bare metal"
-        fi
     else
-        log_warn "Install MetalLB/ingress-nginx yourself, or rerun and answer yes; see QUICKSTART.md"
+        log_warn "No MetalLB pool configured; LoadBalancer IPs stay pending on bare metal"
     fi
 fi
 

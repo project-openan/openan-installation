@@ -37,11 +37,23 @@ spec:
       - name: prepare-runtime
         image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
         imagePullPolicy: {{ $c.image.pullPolicy }}
-        command: ["python", "-c", "from pathlib import Path; [Path('/runtime', p).mkdir(mode=0o770, exist_ok=True) for p in ('data', 'log')]"]
+        # Runs as root: the hostPath PVC volume root is owned by root with
+        # mode 0755 (group has no write), so the app user (10001) cannot
+        # create directories. Root creates and chowns them to 10001.
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -e
+            mkdir -p /runtime/data /runtime/log
+            chmod 0770 /runtime/data /runtime/log
+            chown 10001:10001 /runtime/data /runtime/log
+            # Make the volume root group-writable for the app user
+            chgrp 10001 /runtime
+            chmod 1770 /runtime
+            echo "runtime directories prepared (10001:10001, mode 0770)"
         securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop: ["ALL"]
+          runAsUser: 0
         volumeMounts:
         - name: runtime
           mountPath: /runtime
