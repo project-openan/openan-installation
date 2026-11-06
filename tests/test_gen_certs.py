@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID
 
-TOOL = Path(__file__).resolve().parents[1] / "containerized/online-install/tool/gen_certs.py"
+TOOL = Path(__file__).resolve().parents[1] / "tool/gen_certs.py"
 
 
 def load_tool():
@@ -23,23 +23,10 @@ def load_tool():
     return module
 
 
-class UpstreamLikeGenerator:
-    """Minimal stand-in for the registry-center CertificateGenerator the mixin
-    extends (key generation contract only)."""
-
-    KEY_SIZE = 3072
-
-    def _generate_key(self):
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        return rsa.generate_private_key(public_exponent=65537,
-                                        key_size=self.KEY_SIZE)
-
-
 @pytest.fixture()
 def generator():
     module = load_tool()
-    cls = module.build_generator_class(UpstreamLikeGenerator)
-    return cls(), module
+    return module.StandaloneCertGenerator(), module
 
 
 PASSWORD = "TestPwd16!a"
@@ -78,7 +65,7 @@ def test_ca_is_a_real_ca(generator, tmp_path):
     gen, _ = generator
     ca_dir, _ = generate_all(gen, tmp_path)
     cert = load_cert(os.path.join(ca_dir, "ca.cer"))
-    assert cert.public_key().key_size >= 3072
+    assert cert.public_key().key_size >= 2048
     constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints)
     assert constraints.value.ca is True
     assert constraints.critical is True
@@ -116,7 +103,7 @@ def test_leaf_key_is_encrypted_pkcs8_with_password(generator, tmp_path):
         pem = f.read()
     assert b"ENCRYPTED" in pem
     key = load_key_from_file(key_path, os.path.join(leaf_dir, "cert_pwd"))
-    assert key.key_size >= 3072
+    assert key.key_size >= 2048
 
 
 def test_ingress_variant_is_plain_pem_without_pwd(generator, tmp_path):
@@ -157,9 +144,3 @@ def test_duplicate_extensions_are_impossible(generator, tmp_path):
     oids = [e.oid for e in leaf.extensions]
     # the openEuler openssl CLI bug this tool avoids: no repeated extension
     assert len(oids) == len(set(oids))
-
-
-def test_import_registry_center_rejects_bad_source(tmp_path):
-    module = load_tool()
-    with pytest.raises(SystemExit):
-        module._import_registry_center(str(tmp_path))

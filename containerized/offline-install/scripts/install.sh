@@ -19,6 +19,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Shared tools (gen_certs_offline.py, etc.) live at the repo root, one level up.
+REPO_ROOT="$(cd "$BUNDLE_DIR/../.." && pwd)"
 # shellcheck source=lib/common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 
@@ -50,7 +52,7 @@ INGRESS_HOST=""
 HTTPS_ENABLED="true"
 HTTPS_VERIFY_CLIENT="false"
 # TLS secrets: empty = generate self-signed certificates at install time
-# (tool/gen_certs.py) into openan-rc-tls / openan-oc-tls /
+# (tool/gen_certs_offline.py) into openan-rc-tls / openan-oc-tls /
 # openan-ingress-client (+ openan-public-tls when INGRESS_HOST is set).
 # Set all three names to use operator-provided Secrets instead.
 RC_TLS_SECRET=""
@@ -295,7 +297,7 @@ if [ "$HTTPS_ENABLED" = "true" ]; then
     if [ -n "$RC_TLS_SECRET" ] || [ -n "$OC_TLS_SECRET" ] || [ -n "$INGRESS_CLIENT_SECRET" ]; then
         echo "  TLS:              existing Secrets ($RC_TLS_SECRET / $OC_TLS_SECRET); ingress verifies backends"
     else
-        echo "  TLS:              self-signed via tool/gen_certs.py; ingress verifies backends"
+        echo "  TLS:              self-signed via tool/gen_certs_offline.py; ingress verifies backends"
     fi
 fi
 echo "  Registry center:  $REGISTRY_CENTER_IMAGE"
@@ -517,7 +519,7 @@ fi
 log_step "[6/7] Deploying OpenAN"
 
 # --- TLS certificates (HTTPS default) ----------------------------------------
-# generate: tool/gen_certs.py (openssl) + installer-created Secrets
+# generate: tool/gen_certs_offline.py (openssl) + installer-created Secrets
 # existing: operator-provided Secrets (all three names required)
 create_secret_from_files() {
     local name="$1"; shift
@@ -559,7 +561,7 @@ if [ "$HTTPS_ENABLED" = "true" ]; then
             GEN_ARGS+=(--ingress-ip "$REGISTRY_NODE_IP")
         fi
         log_info "Generating self-signed certificates (openssl)..."
-        python3 "$BUNDLE_DIR/tool/gen_certs.py" "${GEN_ARGS[@]}" || {
+        python3 "$REPO_ROOT/tool/gen_certs_offline.py" "${GEN_ARGS[@]}" || {
             log_error "Certificate generation failed (openssl and python3 are required)"
             exit 1
         }

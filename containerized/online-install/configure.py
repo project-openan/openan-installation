@@ -436,14 +436,14 @@ def configure(namespace, release, output, tag=None):
         create_secret(namespace, prefix + "oc-runtime", oc_runtime)
 
     # --- HTTPS (optional, self-signed) ---------------------------------------
-    https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "no")
+    https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "yes")
     https_config = {}
     if https_enabled == "yes":
         # Generate self-signed certificates using the bundled gen_certs.py tool.
         # The tool requires the registry-center source tree (CertificateGenerator).
         cert_dir = output.parent / "certs"
         cert_dir.mkdir(exist_ok=True)
-        script_dir = Path(__file__).resolve().parent
+        script_dir = Path(__file__).resolve().parent.parent
         gen_script = script_dir / "tool" / "gen_certs.py"
         if not gen_script.is_file():
             raise ValueError(f"gen_certs.py not found at {gen_script}")

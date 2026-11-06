@@ -4,12 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Offline port of the online-install certificate tool, driven by openssl CLI.
 
-The online tool (containerized/online-install/tool/gen_certs.py) vendors the
-registry-center CertificateGenerator and needs the cryptography library; an
-air-gapped offline host has neither the source tree nor third-party wheels.
-This port keeps the same CLI surface and output-tree contract but drives the
-openssl binary (present on every supported Linux host), mirroring the recipe
-proven end-to-end by tests/offline_compose_container_smoke.py.
+The online tool (tool/gen_certs.py) uses the Python cryptography library; an
+air-gapped offline host may not have third-party wheels. This port keeps the
+same CLI surface and output-tree contract but drives the openssl binary
+(present on every supported Linux host), mirroring the recipe proven
+end-to-end by tests/offline_compose_container_smoke.py.
 
 Extension data is passed through config files (-config / -extfile), never
 through `req -addext`, avoiding the duplicate-extension certificates some

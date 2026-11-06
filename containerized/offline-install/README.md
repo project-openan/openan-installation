@@ -99,7 +99,7 @@ the same two databases, and points both applications at it
    manifest list** per component with the bundled `crane`, so a single tag
    serves both amd64 and arm64 nodes.
 4. Installs **MetalLB** (optional) and **ingress-nginx** offline.
-5. **Generates TLS certificates** by default (`tool/gen_certs.py`, openssl):
+5. **Generates TLS certificates** by default (`tool/gen_certs_offline.py`, openssl):
    a CA plus per-service certs stored as Secrets; the ingress verifies
    backend certificates against the shared CA, and OC verifies the registry's
    certificate on its outbound connection. Operator-provided Secrets are

@@ -1,26 +1,24 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""OpenAN deployment certificate tooling, built on registry-center code.
+"""OpenAN deployment certificate tooling (standalone, no registry-center source needed).
 
-Extends the upstream ``CertificateGenerator`` (from the registry-center
-source tree) with the two capabilities the containerized deployment needs
-and the stock class lacks:
+Generates a CA hierarchy + per-component leaf certificates for the
+containerized deployment:
 
-1. A CA hierarchy: ``generate_ca`` produces a CA:TRUE root so one trust
-   anchor can verify every service leaf (ingress ``proxy-ssl-verify``,
-   frontend ``backendTls``, OC->RC registry client all share trust.cer).
+1. A CA:TRUE root so one trust anchor can verify every service leaf
+   (ingress proxy-ssl-verify, frontend backendTls, OC->RC registry client
+   all share trust.cer).
 2. SAN support: leaf certificates carry service DNS names and optional
-   IPs, required by ingress SNI checks (``proxy-ssl-server-name: "true"``)
-   and by browsers accessing the ingress directly by IP.
+   IPs, required by ingress SNI checks and by browsers accessing the
+   ingress directly by IP.
 
-Both use the cryptography library's structured builder (one add_extension
-per extension), which cannot produce the duplicate-extension certificates
-that openEuler's openssl CLI ``req -x509`` + ``-addext`` produces
-(RFC 5280 violation, rejected by strict validators like Python ssl).
+Uses the cryptography library's structured builder (one add_extension per
+extension), which cannot produce the duplicate-extension certificates that
+openEuler's openssl CLI req -x509 + -addext produces (RFC 5280 violation,
+rejected by strict validators like Python ssl).
 
 Usage:
-    python3 gen_certs.py --registry-center-src /path/to/registry-center \
-        --out /root/openan-test/certs [--namespace openan] \
+    python3 gen_certs.py --out /path/to/certs [--namespace openan] \
         [--ingress-host openan.test] [--ingress-ip 192.168.200.137] [...]
 
 Output tree (compatible with the chart TLS secret contract):
@@ -33,37 +31,6 @@ import argparse
 import os
 import sys
 
-# --- vendor the registry-center source tree (same pattern as build.sh) ---
-RC_SRC = os.environ.get("OPENAN_REGISTRY_CENTER_SRC", "")
-
-
-def _import_registry_center(rc_src):
-    src = os.path.abspath(rc_src or RC_SRC)
-    if not os.path.isfile(os.path.join(src, "common", "cert", "certificate_generator.py")):
-        sys.exit(f"ERROR: registry-center source not found at {src} "
-                 f"(expected common/cert/certificate_generator.py). "
-                 f"Pass --registry-center-src or set OPENAN_REGISTRY_CENTER_SRC.")
-    if src not in sys.path:
-        sys.path.insert(0, src)
-    # Compatibility shim: PrivateKeyTypes exists only in cryptography >= 37.
-    # Upstream registry-center imports it (annotations only); provide a union
-    # alias from the classes available in 36.x so the module imports cleanly.
-    import typing
-    import cryptography.hazmat.primitives.asymmetric.types as _asym_types
-    if not hasattr(_asym_types, "PrivateKeyTypes"):
-        from cryptography.hazmat.primitives.asymmetric import (
-            dsa, ec, ed25519, ed448, rsa)
-        _asym_types.PrivateKeyTypes = typing.Union[
-            dsa.DSAPrivateKey, ec.EllipticCurvePrivateKey,
-            ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey, rsa.RSAPrivateKey]
-    try:
-        from common.cert.certificate_generator import CertificateGenerator
-        return CertificateGenerator
-    except ImportError as exc:
-        sys.exit(f"ERROR: cannot import CertificateGenerator from {src}: {exc}")
-
-
-# --- downstream subclass: adds CA hierarchy + SAN to upstream behavior ---
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -71,20 +38,44 @@ import datetime
 import ipaddress
 
 
-class K8sCertGeneratorMixin:
-    """Mixin adding generate_ca / generate_signed_server_cert to a
-    CertificateGenerator subclass without touching upstream behavior."""
+class StandaloneCertGenerator:
+    """Standalone certificate generator (no registry-center dependency)."""
 
     CA_DAYS = 3650
     LEAF_DAYS = 825
 
+    def __init__(self, key_algorithm="RSA"):
+        self.key_algorithm = key_algorithm
+
+    def _generate_key(self):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    def _exists_any(self, directory, names):
+        return any(os.path.exists(os.path.join(directory, n)) for n in names)
+
+    def _write_cert(self, directory, filename, cert):
+        path = os.path.join(directory, filename)
+        with open(path, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        os.chmod(path, 0o644)
+
+    def _write_encrypted_key(self, directory, filename, key, password):
+        path = os.path.join(directory, filename)
+        with open(path, "wb") as f:
+            f.write(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.BestAvailableEncryption(
+                    password.encode())))
+        os.chmod(path, 0o600)
+
     # --- CA ---
-    def generate_ca(self, ca_dir: str, password: str) -> bool:
+    def generate_ca(self, ca_dir, password):
         """Generate CA:TRUE root certificate (ca.cer / ca_key.pem / cert_pwd)."""
-        import os as _os
         if self._exists_any(ca_dir, ["ca.cer", "ca_key.pem"]):
             return False
-        _os.makedirs(ca_dir, mode=0o700, exist_ok=True)
+        os.makedirs(ca_dir, mode=0o700, exist_ok=True)
         key = self._generate_key()
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "OpenAN-CA")])
         builder = (x509.CertificateBuilder()
@@ -108,36 +99,13 @@ class K8sCertGeneratorMixin:
         cert = builder.sign(key, hashes.SHA256())
         self._write_cert(ca_dir, "ca.cer", cert)
         self._write_encrypted_key(ca_dir, "ca_key.pem", key, password)
-        with open(_os.path.join(ca_dir, "cert_pwd"), "w") as f:
+        with open(os.path.join(ca_dir, "cert_pwd"), "w") as f:
             f.write(password)
-        _os.chmod(_os.path.join(ca_dir, "cert_pwd"), 0o600)
+        os.chmod(os.path.join(ca_dir, "cert_pwd"), 0o600)
         return True
 
-    def _exists_any(self, directory: str, names) -> bool:
-        import os as _os
-        return any(_os.path.exists(_os.path.join(directory, n)) for n in names)
-
-    def _write_cert(self, directory: str, filename: str, cert) -> None:
-        import os as _os
-        path = _os.path.join(directory, filename)
-        with open(path, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-        _os.chmod(path, 0o644)
-
-    def _write_encrypted_key(self, directory: str, filename: str,
-                             key, password: str) -> None:
-        import os as _os
-        path = _os.path.join(directory, filename)
-        with open(path, "wb") as f:
-            f.write(key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.BestAvailableEncryption(
-                    password.encode())))
-        _os.chmod(path, 0o600)
-
     # --- leaf signed by CA, with SAN ---
-    def load_ca(self, ca_dir: str, password: str):
+    def load_ca(self, ca_dir, password):
         """Load CA cert object and private key from ca_dir."""
         with open(os.path.join(ca_dir, "ca.cer"), "rb") as f:
             ca_cert = x509.load_pem_x509_certificate(f.read())
@@ -145,11 +113,11 @@ class K8sCertGeneratorMixin:
             ca_key = serialization.load_pem_private_key(f.read(), password.encode())
         return ca_cert, ca_key
 
-    def generate_signed_server_cert(self, cert_dir: str, ca_dir: str, ca_password: str,
-                                    common_name: str, san_dns=(), san_ips=(),
-                                    password: str = None,
-                                    cert_file: str = None,
-                                    key_file: str = None) -> bool:
+    def generate_signed_server_cert(self, cert_dir, ca_dir, ca_password,
+                                    common_name, san_dns=(), san_ips=(),
+                                    password=None,
+                                    cert_file=None,
+                                    key_file=None):
         """Generate a server leaf signed by the CA, with SAN.
 
         cert_file/key_file default to upstream contract names (server.cer /
@@ -199,8 +167,6 @@ class K8sCertGeneratorMixin:
                                   password or ca_password)
         if cert_file == "tls.crt" or key_file == "tls.key":
             # ingress key must be readable by nginx: plain PEM
-            with open(os.path.join(cert_dir, key_file or "tls.key"), "rb") as f:
-                enc = f.read()
             plain = key.private_bytes(encoding=serialization.Encoding.PEM,
                                       format=serialization.PrivateFormat.PKCS8,
                                       encryption_algorithm=serialization.NoEncryption())
@@ -220,17 +186,10 @@ class K8sCertGeneratorMixin:
         return True
 
 
-def build_generator_class(base_cls):
-    """Compose the upstream class with the K8s mixin."""
-    return type("OpenANCertificateGenerator", (K8sCertGeneratorMixin, base_cls), {})
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate CA + RC/OC/ingress certificates "
                     "for the OpenAN containerized deployment.")
-    parser.add_argument("--registry-center-src", default=RC_SRC,
-                        help="path to the registry-center source tree")
     parser.add_argument("--out", required=True, help="output directory")
     parser.add_argument("--namespace", default="openan")
     parser.add_argument("--cluster-domain", default="cluster.local")
@@ -244,12 +203,10 @@ def main(argv=None):
                         help="CA/leaf key password; generated if omitted")
     args = parser.parse_args(argv)
 
-    base_cls = _import_registry_center(args.registry_center_src)
-    from common.cert.password_generator import PasswordGenerator
-    password = args.ca_password or PasswordGenerator().generate_password(16)
+    import secrets as _secrets
+    password = args.ca_password or _secrets.token_urlsafe(16)
 
-    Gen = build_generator_class(base_cls)
-    gen = Gen(key_algorithm="RSA")
+    gen = StandaloneCertGenerator(key_algorithm="RSA")
 
     ns, dom = args.namespace, args.cluster_domain
     out = args.out
