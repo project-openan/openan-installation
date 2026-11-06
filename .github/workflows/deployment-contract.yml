@@ -18,7 +18,7 @@ jobs:
         with:
           version: v3.19.0
       - run: pip install pytest pyyaml cryptography
-      - run: python -m pytest tests/ -q
+      - run: python -m pytest tests/ -q --tb=short
       - name: Shell syntax
         run: |
           bash -n containerized/online-install/install.sh
