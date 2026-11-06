@@ -347,6 +347,15 @@ fi
 if kubectl get namespace ingress-nginx >/dev/null 2>&1; then
     INGRESS_PRESENT=true
 fi
+# MetalLB namespace may exist while its IPAddressPool was removed (e.g. by a
+# previous uninstall or manual cleanup); the pool is what actually assigns
+# LoadBalancer IPs, so treat a missing pool as "not present".
+if [ "$METALLB_PRESENT" = true ]; then
+    if ! kubectl get ipaddresspool openan-pool -n metallb-system >/dev/null 2>&1; then
+        log_warn "MetalLB namespace found but openan-pool IPAddressPool is missing"
+        METALLB_PRESENT=false
+    fi
+fi
 if [ "$METALLB_PRESENT" = true ] && [ "$INGRESS_PRESENT" = true ]; then
     log_info "MetalLB and ingress-nginx already installed, skipping"
 else
