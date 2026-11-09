@@ -130,16 +130,29 @@ def diagnose(compose):
 
 
 def certificates(root):
+    # CA with v3_ca extensions: OpenSSL 3.5+/Python 3.14 strict verification
+    # (ssl.create_default_context) requires keyUsage on the issuing CA.
     ca = root / "ca"
     ca.mkdir()
+    ca_config = root / "ca.cnf"
+    ca_config.write_text("[req]\nprompt = no\ndistinguished_name = dn\nx509_extensions = v3_ca\n"
+                         "[dn]\nCN = SyntheticComposeCA\n"
+                         "[v3_ca]\nbasicConstraints = critical,CA:TRUE\n"
+                         "keyUsage = critical,keyCertSign,cRLSign\n"
+                         "subjectKeyIdentifier = hash\n")
     command("openssl", "req", "-x509", "-newkey", "rsa:3072", "-nodes", "-sha256", "-days", "1",
-            "-subj", "/CN=SyntheticComposeCA", "-keyout", str(ca / "key.pem"), "-out", str(ca / "trust.cer"))
+            "-config", str(ca_config), "-keyout", str(ca / "key.pem"), "-out", str(ca / "trust.cer"))
     server = root / "server"
     server.mkdir()
     command("openssl", "req", "-new", "-newkey", "rsa:3072", "-sha256", "-subj", "/CN=localhost",
             "-passout", "pass:Container#2026", "-keyout", str(server / "server_key.pem"), "-out", str(server / "server.csr"))
     extensions = root / "server.ext"
-    extensions.write_text("basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:registry-center,DNS:orchestration-center,DNS:localhost,IP:127.0.0.1\n")
+    extensions.write_text("basicConstraints=critical,CA:FALSE\n"
+                          "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                          "extendedKeyUsage=serverAuth\n"
+                          "subjectKeyIdentifier=hash\n"
+                          "authorityKeyIdentifier=keyid,issuer\n"
+                          "subjectAltName=DNS:registry-center,DNS:orchestration-center,DNS:localhost,IP:127.0.0.1\n")
     command("openssl", "x509", "-req", "-in", str(server / "server.csr"), "-CA", str(ca / "trust.cer"),
             "-CAkey", str(ca / "key.pem"), "-CAcreateserial", "-days", "1", "-sha256",
             "-extfile", str(extensions), "-out", str(server / "server.cer"))
@@ -149,7 +162,11 @@ def certificates(root):
     client.mkdir()
     command("openssl", "req", "-new", "-newkey", "rsa:3072", "-nodes", "-sha256", "-subj", "/CN=synthetic-client",
             "-keyout", str(client / "client_key.pem"), "-out", str(client / "client.csr"))
-    extensions.write_text("basicConstraints=critical,CA:FALSE\nextendedKeyUsage=clientAuth\n")
+    extensions.write_text("basicConstraints=critical,CA:FALSE\n"
+                          "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                          "extendedKeyUsage=clientAuth\n"
+                          "subjectKeyIdentifier=hash\n"
+                          "authorityKeyIdentifier=keyid,issuer\n")
     command("openssl", "x509", "-req", "-in", str(client / "client.csr"), "-CA", str(ca / "trust.cer"),
             "-CAkey", str(ca / "key.pem"), "-CAcreateserial", "-days", "1", "-sha256",
             "-extfile", str(extensions), "-out", str(client / "client.cer"))

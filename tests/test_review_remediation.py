@@ -500,3 +500,100 @@ def test_install_auto_install_and_deploy_gate_are_interactive_only():
     assert "get-helm-3" not in values_mode
     assert "get.docker.com" not in values_mode
     assert "Deploy with this configuration?" not in values_mode
+
+
+# ---------------------------------------------------------------------------
+# Issue #40: interactive validation retries instead of exiting immediately
+# ---------------------------------------------------------------------------
+def test_issue40_offline_installer_uses_validate_with_retry():
+    # The post-prompt validation block must route through the shared helper
+    # (retry + skip-or-abort) instead of bare `exit 2` on the first failure.
+    text = (ROOT / "containerized/offline-install/scripts/install.sh").read_text(encoding="utf-8")
+    assert "validate_with_retry" in text
+    for validator in ("validate_ingress_host", "validate_db_password",
+                      "validate_namespace", "validate_metallb_pool"):
+        assert validator in text, f"{validator} not wired into install.sh"
+
+
+def test_issue40_offline_common_defines_retry_helpers():
+    text = (ROOT / "containerized/offline-install/scripts/lib/common.sh").read_text(encoding="utf-8")
+    assert "validate_with_retry()" in text
+    assert "MAX_ATTEMPTS=3" in text
+    for name in ("validate_ingress_host", "validate_db_password",
+                 "validate_namespace", "validate_metallb_pool",
+                 "reprompt_ingress_host", "reprompt_db_password",
+                 "reprompt_namespace", "reprompt_metallb_pool"):
+        assert name in text, f"{name} missing from common.sh"
+    # Non-interactive fast-fail is preserved inside the helper.
+    assert 'exit 2' in text
+
+
+def test_issue40_online_installer_uses_validate_with_retry():
+    text = (ROOT / "containerized/online-install/install.sh").read_text(encoding="utf-8")
+    assert "validate_with_retry()" in text
+    assert "MAX_ATTEMPTS=3" in text
+    # The MetalLB pool validation routes through the shared helper.
+    assert "validate_metallb_pool_cfg" in text
+    assert "validate_with_retry" in text
+
+
+def test_issue40_online_configure_offers_skip_after_retries():
+    module = wizard()
+    assert hasattr(module, "_offer_skip")
+    assert hasattr(module, "ask_secret")
+    # Every `for ... else: raise ValueError` validation block must route the
+    # exhausted-retries path through _offer_skip before raising.
+    import inspect
+    source = inspect.getsource(module.configure)
+    assert "_offer_skip" in source
+    assert source.count("_offer_skip") >= 3, (
+        "agent registry URL / PostgreSQL password / admin password must each offer skip")
+
+
+def test_issue40_binary_one_click_registry_url_retry():
+    text = (ROOT / "binary/one-click/install.sh").read_text(encoding="utf-8")
+    assert "Issue #40" in text
+    assert "MAX_ATTEMPTS=3" in text
+    assert "ask_with_retry" in text
+    assert "validate_registry_url" in text
+    assert "reprompt_registry_url" in text
+    assert "Registry URL must start with http:// or https://" in text
+    # The skip prompt text uses the helper's "$label" interpolation; assert on
+    # the static parts instead of the full rendered sentence.
+    assert "Skip $label validation and continue anyway" in text
+    # The retry is driven by the shared helper (no ad-hoc loop needed).
+    assert "ask_with_retry" in text
+
+
+def test_issue40_validate_ingress_host_contract():
+    # Bare IP and DNS names are BOTH accepted (commit 4d518ea contract);
+    # only whitespace / scheme / invalid chars fail.
+    script = ROOT / "containerized/offline-install/scripts/lib/common.sh"
+    text = script.read_text(encoding="utf-8")
+    # Positive: the validator checks whitespace, scheme, and invalid chars —
+    # the bare-IP acceptance is implicit (no IP-rejecting branch).
+    assert "validate_ingress_host()" in text
+    assert "must not contain whitespace" in text
+    assert "no scheme/path" in text
+    assert "invalid characters" in text
+
+
+def test_issue40_offline_cert_ca_has_key_usage(tmp_path):
+    # Regression for the CI failure: certificates() must produce a CA with
+    # critical keyUsage so ssl.create_default_context accepts the chain.
+    # The chown in certificates() requires root; CI runners are non-root, so
+    # we monkeypatch os.chown for the cert-content assertions only.
+    import subprocess
+    smoke = ROOT / "tests/offline_compose_container_smoke.py"
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("smoke", smoke)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Non-root CI cannot chown; patch it out (cert content is what we verify).
+    module.os.chown = lambda *a, **kw: None
+    server, client, signing, ca_cert = module.certificates(tmp_path)
+    text = subprocess.run(["openssl", "x509", "-in", str(ca_cert), "-noout", "-text"],
+                          capture_output=True, text=True, check=True).stdout
+    assert "X509v3 Key Usage: critical" in text
+    assert "Certificate Sign" in text
+    assert "CA:TRUE" in text

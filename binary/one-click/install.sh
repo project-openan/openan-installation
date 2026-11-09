@@ -154,6 +154,58 @@ DEFAULT_ORCHESTRATION_VERSION="v1.0.0"
 REGISTRY_SOURCE_BASE="https://github.com/project-openan/registry-center/archive/refs/tags"
 ORCHESTRATION_SOURCE_BASE="https://github.com/project-openan/orchestration-center/archive/refs/tags"
 
+# =============================================================================
+# Interactive prompt helpers (issue #40): validate-and-retry pattern shared
+# with the containerized installers — re-prompt the failing field up to
+# MAX_ATTEMPTS, then offer skip-or-abort.
+# =============================================================================
+MAX_ATTEMPTS=3
+
+# ask_with_retry <label> <validate-fn> <reprompt-fn>
+#   Runs validate-fn; on failure re-runs reprompt-fn + validate-fn up to
+#   MAX_ATTEMPTS, then offers skip-or-abort.
+ask_with_retry() {
+    local label="$1" validate_fn="$2" reprompt_fn="$3"
+    if $validate_fn; then
+        return 0
+    fi
+    local attempt=1
+    while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
+        echo "  [WARN] $label: validation failed (attempt $attempt/$MAX_ATTEMPTS). Re-prompting."
+        $reprompt_fn
+        if $validate_fn; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    echo "  [ERROR] $label still invalid after $MAX_ATTEMPTS attempts."
+    read -r -p "        Skip $label validation and continue anyway (not recommended)? [y/N]: " _skip_input < /dev/tty || _skip_input=""
+    case "${_skip_input}" in
+        [yY]|[yY][eE][sS])
+            echo "  [WARN] Continuing with invalid $label."
+            return 0
+            ;;
+        *)
+            echo "  [ERROR] Aborting. Re-run the installer to start over."
+            exit 1
+            ;;
+    esac
+}
+
+# --- Registry URL validator / re-prompter (issue #40) -----------------------
+validate_registry_url() {
+    if printf '%s' "${USER_REGISTRY_URL}" | grep -qE '^https?://'; then
+        return 0
+    fi
+    echo "  [ERROR] Registry URL must start with http:// or https://"
+    return 1
+}
+reprompt_registry_url() {
+    USER_REGISTRY_URL=""
+    read -r -p "        Enter registry center URL [${DEFAULT_REGISTRY_URL}]: " USER_REGISTRY_URL < /dev/tty || USER_REGISTRY_URL=""
+    USER_REGISTRY_URL="${USER_REGISTRY_URL:-${DEFAULT_REGISTRY_URL}}"
+}
+
 # Accept "v1.1.0" or "1.1.0" (plain numbers get the "v" prefix); pass custom tags through
 normalize_tag() {
     case "$1" in
@@ -1270,8 +1322,10 @@ if [ -f "${SERVER_CONF}" ]; then
         DEFAULT_REGISTRY_URL="https://127.0.0.1:5000"
         echo ""
         echo "[INPUT] Orchestration-center needs to connect to a running registry-center."
-        read -r -p "        Enter registry center URL [${DEFAULT_REGISTRY_URL}]: " USER_REGISTRY_URL < /dev/tty || USER_REGISTRY_URL=""
-        USER_REGISTRY_URL="${USER_REGISTRY_URL:-${DEFAULT_REGISTRY_URL}}"
+        # Issue #40: validate the URL format and re-prompt (up to 3 attempts,
+        # then skip-or-abort) instead of accepting any value silently.
+        reprompt_registry_url
+        ask_with_retry "registry center URL" validate_registry_url reprompt_registry_url
         echo "  [OK] Registry URL set to: ${USER_REGISTRY_URL}"
 
         # Set agent_registry_url in server.conf to user-provided value (no protocol conversion)

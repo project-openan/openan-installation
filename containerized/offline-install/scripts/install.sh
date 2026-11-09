@@ -201,30 +201,13 @@ if [ -z "$OC_ADMIN_PASSWORD" ]; then
 fi
 
 # --- Validation (after prompts: interactive answers override config.env) -----
-if [ -z "$DB_PASSWORD" ]; then
-    log_error "DB_PASSWORD is required (config.env or the interactive prompt); there is no default."
-    exit 2
-fi
-if [ "${#DB_PASSWORD}" -lt 8 ]; then
-    log_error "DB_PASSWORD must be at least 8 characters"
-    exit 2
-fi
-if ! printf '%s' "$K8S_NAMESPACE" | grep -Eq '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' || [ "${#K8S_NAMESPACE}" -gt 63 ]; then
-    log_error "K8S_NAMESPACE must be a lowercase DNS label (a-z, 0-9, '-'), max 63 characters"
-    exit 2
-fi
-if [ "$INSTALL_METALLB" = "true" ] && [ -n "$METALLB_POOL" ]; then
-    pool_ok="true"
-    IFS=','
-    for token in $METALLB_POOL; do
-        printf '%s' "$token" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}(-[0-9]{1,3}(\.[0-9]{1,3}){3}|/[0-9]{1,2})?$' || pool_ok="false"
-    done
-    unset IFS
-    [ "$pool_ok" = "true" ] || {
-        log_error "METALLB_POOL must be IP ranges (a.b.c.d-a.b.c.d) and/or CIDRs (a.b.c.d/n), comma-separated"
-        exit 2
-    }
-fi
+# Issue #40: a single invalid answer no longer exits; interactive users are
+# re-prompted for only the failing field (up to MAX_ATTEMPTS), then offered
+# skip-or-abort. Non-interactive (--config/--yes) still fails fast.
+validate_with_retry "Ingress host" validate_ingress_host reprompt_ingress_host
+validate_with_retry "Database password" validate_db_password reprompt_db_password
+validate_with_retry "Namespace" validate_namespace reprompt_namespace
+validate_with_retry "MetalLB pool" validate_metallb_pool reprompt_metallb_pool
 
 if [ -z "$REGISTRY_NODE" ]; then
     REGISTRY_NODE="$(hostname | tr '[:upper:]' '[:lower:]')"
