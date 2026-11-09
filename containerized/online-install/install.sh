@@ -101,6 +101,43 @@ ask_input() {
 NAME_RE='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 
 # ---------------------------------------------------------------------------
+# Validation with interactive retry (issue #40 pattern; shared with the
+# offline-install helper of the same name)
+# ---------------------------------------------------------------------------
+# validate_with_retry <label> <validate-fn> <reprompt-fn>
+#   Runs validate-fn; on failure (non-interactive --values mode) exits 2
+#   immediately. Interactive: re-runs reprompt-fn and validate-fn up to
+#   MAX_ATTEMPTS, then offers [s]kip (with a warning) or abort.
+INTERACTIVE=false
+MAX_ATTEMPTS=3
+validate_with_retry() {
+    local label="$1" validate_fn="$2" reprompt_fn="$3"
+    if $validate_fn; then
+        return 0
+    fi
+    if [ "$INTERACTIVE" != "true" ]; then
+        echo "$label: validation failed; fix the values and re-run." >&2
+        exit 2
+    fi
+    local attempt=1
+    while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
+        echo "[WARN] $label: validation failed (attempt $attempt/$MAX_ATTEMPTS). Re-prompting." >&2
+        $reprompt_fn
+        if $validate_fn; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    echo "[ERROR] $label still invalid after $MAX_ATTEMPTS attempts." >&2
+    if ask_yes_no "Skip $label validation and continue anyway (not recommended)?" "no"; then
+        echo "[WARN] Continuing with invalid $label." >&2
+        return 0
+    fi
+    echo "[ERROR] Aborting. Re-run the installer to start over." >&2
+    exit 2
+}
+
+# ---------------------------------------------------------------------------
 # Argument parsing (both modes)
 # ---------------------------------------------------------------------------
 VALUES=""
@@ -191,6 +228,8 @@ fi
 # Interactive mode (requires a terminal; configure.py collects secrets via TTY)
 # ---------------------------------------------------------------------------
 [ -t 0 ] || { echo "install.sh without --values is interactive and requires a terminal; add --values FILE for automation" >&2; exit 2; }
+
+INTERACTIVE=true
 
 echo ""
 echo "=========================================="
@@ -391,15 +430,25 @@ if kubectl get ipaddresspool openan-pool -n metallb-system >/dev/null 2>&1; then
     log_info "MetalLB pool openan-pool already exists, skipping pool configuration"
 else
     if [ -t 0 ]; then
-        for _ in 1 2 3; do
-            METALLB_POOL_CFG="$(ask_input "MetalLB IP pool (e.g. 192.168.1.200-192.168.1.250 or a CIDR, leave empty to skip)" "")"
-            [ -z "$METALLB_POOL_CFG" ] && break
-            if printf '%s' "$METALLB_POOL_CFG" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(-([0-9]{1,3}\.){3}[0-9]{1,3}|/[0-9]{1,2})?$'; then
-                break
+        # Issue #40: the shared validate_with_retry helper drives the pool
+        # prompt (3 attempts, then skip-or-abort) instead of an inline loop.
+        # An empty answer means "skip the pool" and is always accepted.
+        validate_metallb_pool_cfg() {
+            if [ -z "$METALLB_POOL_CFG" ]; then
+                return 0
             fi
-            log_warn "Pool must be an IP range (a.b.c.d-a.b.c.d) or a CIDR (a.b.c.d/n)"
-            METALLB_POOL_CFG=""
-        done
+            if printf '%s' "$METALLB_POOL_CFG" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(-([0-9]{1,3}\.){3}[0-9]{1,3}|/[0-9]{1,2})?$'; then
+                return 0
+            fi
+            echo "[ERROR] Pool must be an IP range (a.b.c.d-a.b.c.d) or a CIDR (a.b.c.d/n)" >&2
+            return 1
+        }
+        reprompt_metallb_pool_cfg() {
+            METALLB_POOL_CFG="$(ask_input "MetalLB IP pool (e.g. 192.168.1.200-192.168.1.250 or a CIDR, leave empty to skip)" "")"
+        }
+        # First prompt, then validate (retrying the prompt on failure).
+        reprompt_metallb_pool_cfg
+        validate_with_retry "MetalLB pool" validate_metallb_pool_cfg reprompt_metallb_pool_cfg
     else
         log_warn "No terminal; skipping MetalLB pool prompt (existing pool not found)"
     fi

@@ -21,6 +21,122 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $1"; }
 log_prompt(){ echo -e "${BLUE}[?]${NC} $1"; }
 
+
+# ---------------------------------------------------------------------------
+# Validation with interactive retry (issue #40 pattern)
+# ---------------------------------------------------------------------------
+# validate_with_retry <label> <validate-fn> <reprompt-fn>
+#   Runs validate-fn; on failure (non-interactive) exits 2 immediately.
+#   Interactive: re-runs reprompt-fn and validate-fn up to MAX_ATTEMPTS,
+#   then offers [s]kip (with a warning) or abort.  The validate-fn must
+#   print log_error lines describing every problem before returning 1.
+MAX_ATTEMPTS=3
+validate_with_retry() {
+    local label="$1" validate_fn="$2" reprompt_fn="$3"
+    if $validate_fn; then
+        return 0
+    fi
+    if [ "$ASSUME_YES" = "true" ] || [ -n "$CONFIG_FILE" ]; then
+        log_error "$label: validation failed in non-interactive mode; fix the values and re-run."
+        exit 2
+    fi
+    local attempt=1
+    while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
+        log_warn "$label: validation failed (attempt $attempt/$MAX_ATTEMPTS). Re-prompting."
+        $reprompt_fn
+        if $validate_fn; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    log_error "$label still invalid after $MAX_ATTEMPTS attempts."
+    if ask_yes_no "Skip $label validation and continue anyway (not recommended)?" "no"; then
+        log_warn "Continuing with invalid $label."
+        return 0
+    fi
+    log_error "Aborting. Re-run the installer to start over."
+    exit 2
+}
+
+# --- Field validators (print every problem, return 1 on any failure) --------
+# INGRESS_HOST contract (commit 4d518ea): a DNS name OR a bare IPv4/IPv6
+# address (MetalLB VIP / node IP) enables https://<host> access with the
+# matching SAN. Empty = direct IP access via the LoadBalancer / NodePort.
+# We only reject values that are neither a DNS name nor an IP (whitespace,
+# scheme, path, ...), so the retry loop re-prompts on real typos without
+# regressing the bare-IP flow.
+validate_ingress_host() {
+    local rc=0
+    if [ -n "$INGRESS_HOST" ]; then
+        if printf '%s' "$INGRESS_HOST" | grep -q '[[:space:]]'; then
+            log_error "INGRESS_HOST must not contain whitespace"
+            rc=1
+        elif printf '%s' "$INGRESS_HOST" | grep -q '://'; then
+            log_error "INGRESS_HOST must be a host or IP only (no scheme/path, e.g. openan.example.com)"
+            rc=1
+        elif ! printf '%s' "$INGRESS_HOST" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+            log_error "INGRESS_HOST contains invalid characters (allowed: letters, digits, dot, dash, underscore)"
+            rc=1
+        fi
+    fi
+    return "$rc"
+}
+
+validate_db_password() {
+    local rc=0
+    if [ -z "$DB_PASSWORD" ]; then
+        log_error "DB_PASSWORD is required (config.env or the interactive prompt); there is no default."
+        rc=1
+    elif [ "${#DB_PASSWORD}" -lt 8 ]; then
+        log_error "DB_PASSWORD must be at least 8 characters"
+        rc=1
+    fi
+    return "$rc"
+}
+
+validate_namespace() {
+    local rc=0
+    if ! printf '%s' "$K8S_NAMESPACE" | grep -Eq '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' || [ "${#K8S_NAMESPACE}" -gt 63 ]; then
+        log_error "K8S_NAMESPACE must be a lowercase DNS label (a-z, 0-9, '-'), max 63 characters"
+        rc=1
+    fi
+    return "$rc"
+}
+
+validate_metallb_pool() {
+    local rc=0
+    if [ "$INSTALL_METALLB" = "true" ] && [ -n "$METALLB_POOL" ]; then
+        local pool_ok="true" token
+        IFS=','
+        for token in $METALLB_POOL; do
+            printf '%s' "$token" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}(-[0-9]{1,3}(\.[0-9]{1,3}){3}|/[0-9]{1,2})?$' || pool_ok="false"
+        done
+        unset IFS
+        if [ "$pool_ok" != "true" ]; then
+            log_error "METALLB_POOL must be IP ranges (a.b.c.d-a.b.c.d) and/or CIDRs (a.b.c.d/n), comma-separated"
+            rc=1
+        fi
+    fi
+    return "$rc"
+}
+
+# --- Re-prompt helpers (interactive only) -----------------------------------
+reprompt_ingress_host() {
+    INGRESS_HOST="$(ask_input "  Ingress host (empty = access by IP)" "")"
+}
+
+reprompt_db_password() {
+    DB_PASSWORD="$(ask_input_secret "  Database password (8+ characters)" "")"
+}
+
+reprompt_namespace() {
+    K8S_NAMESPACE="$(ask_input "  Kubernetes namespace" "openan")"
+}
+
+reprompt_metallb_pool() {
+    METALLB_POOL="$(ask_input "  MetalLB IP pool (e.g. 192.168.1.200-192.168.1.250)" "")"
+}
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------

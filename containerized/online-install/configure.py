@@ -129,6 +129,33 @@ def secret_input(label):
     return value
 
 
+def _offer_skip(label):
+    """Issue #40 escape hatch: after MAX_ATTEMPTS failures offer skip-or-abort."""
+    prompt = f"  Skip {label} validation and continue anyway (not recommended)? [y/N]: "
+    answer = input(prompt).strip().lower()
+    if answer in ("y", "yes"):
+        print(f"  [WARN] Continuing with invalid {label}.")
+        return True
+    raise ValueError(f"{label}: validation failed and was not skipped; aborting")
+
+
+def ask_secret(label, required=True):
+    """Hidden input with retry (MAX_ATTEMPTS), preserving secret_input()'s
+    masking and non-TTY guard so existing test mocks keep working."""
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            return secret_input(label)
+        except ValueError as exc:
+            if "Empty secrets are not allowed" not in str(exc):
+                raise  # non-TTY / other hard failures propagate unchanged
+            if not required:
+                return ""
+            print(f"  [WARN] {label} is required ({attempt + 1}/{MAX_ATTEMPTS})")
+    if _offer_skip(label):
+        return ""
+    raise ValueError(f"{label} not provided after {MAX_ATTEMPTS} attempts")
+
+
 def ask_optional(label):
     value = input(label + " [empty to skip]: ").strip()
     return value
@@ -199,7 +226,7 @@ def collect_optional_model(component, capability):
     if not model:
         return None
     url = ask(f"{component} {capability} model URL (e.g. https://api.example.com/v1/{capability}s)")
-    api_key = secret_input(f"{component} {capability} API key")
+    api_key = ask_secret(f"{component} {capability} API key")
     return model, url, api_key
 
 
@@ -208,7 +235,7 @@ def collect_llm(component):
     for attempt in range(MAX_ATTEMPTS):
         model = ask(f"{component} chat model id")
         url = ask(f"{component} chat URL (e.g. https://api.example.com/v1/chat/completions)")
-        api_key = secret_input(f"{component} chat API key")
+        api_key = ask_secret(f"{component} chat API key")
         if probe_llm(model, url, api_key):
             break
         if attempt < MAX_ATTEMPTS - 1:
@@ -322,7 +349,7 @@ def configure(namespace, release, output, tag=None):
             a2at_model = ask_optional("A2A-T SDK negotiation model (workflow execution)")
             if a2at_model:
                 a2at_url = ask("A2A-T SDK base URL (e.g. https://api.example.com/v1)")
-                a2at_key = secret_input("A2A-T SDK API key")
+                a2at_key = ask_secret("A2A-T SDK API key")
                 a2at = {"model": a2at_model, "baseUrl": a2at_url, "key": a2at_key}
     else:
         print("  LLM configuration skipped. models.yaml will use placeholder values.")
@@ -346,7 +373,12 @@ def configure(namespace, release, output, tag=None):
                 break
             print(f"  [WARN] URL must start with http:// or https:// ({attempt + 1}/{MAX_ATTEMPTS})")
         else:
-            raise ValueError("Agent registry URL must start with http:// or https://")
+            # Issue #40: offer skip-or-abort after MAX_ATTEMPTS instead of
+            # raising immediately; a skipped value leaves the default.
+            if _offer_skip("agent registry URL"):
+                agent_registry_url = ""
+            else:
+                raise ValueError("Agent registry URL must start with http:// or https://")
 
     # Check public references before collecting/creating any credentials.
     checks = [("configmap", name) for name in models_ref.values()]
@@ -363,26 +395,34 @@ def configure(namespace, release, output, tag=None):
 
     # PostgreSQL password
     for attempt in range(MAX_ATTEMPTS):
-        in_cluster_password = secret_input("PostgreSQL password (8+ characters)")
+        in_cluster_password = ask_secret("PostgreSQL password (8+ characters)")
         if len(in_cluster_password) >= 8:
             break
         print(f"  [WARN] Password must be at least 8 characters ({attempt + 1}/{MAX_ATTEMPTS})")
     else:
-        raise ValueError("PostgreSQL password must be at least 8 characters")
+        # Issue #40: offer skip-or-abort after MAX_ATTEMPTS.
+        if _offer_skip("PostgreSQL password"):
+            in_cluster_password = ""
+        else:
+            raise ValueError("PostgreSQL password must be at least 8 characters")
 
     # Admin password
     admin = None
     if components["orchestration"]:
         pwd_hint = "8+ chars, lower/upper/digit/special"
         for attempt in range(MAX_ATTEMPTS):
-            admin = secret_input(f"Initial admin password ({pwd_hint})")
+            admin = ask_secret(f"Initial admin password ({pwd_hint})")
             if (len(admin) >= 8
                     and re.search(r"[a-z]", admin) and re.search(r"[A-Z]", admin)
                     and re.search(r"[0-9]", admin) and re.search(r"[^a-zA-Z0-9]", admin)):
                 break
             print(f"  [WARN] Password does not meet requirements ({pwd_hint}) ({attempt + 1}/{MAX_ATTEMPTS})")
         else:
-            raise ValueError(f"Admin password does not meet requirements: {pwd_hint}")
+            # Issue #40: offer skip-or-abort after MAX_ATTEMPTS.
+            if _offer_skip("admin password"):
+                admin = None
+            else:
+                raise ValueError(f"Admin password does not meet requirements: {pwd_hint}")
 
     # --- Service-token machinery (registry <-> orchestration pairing) ---------
     token = hmac_key = fingerprint = credential = None
