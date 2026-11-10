@@ -107,17 +107,64 @@ the same two databases, and points both applications at it
    optional `REGISTRY_CLIENT_SECRET`). Database, admin and LLM credentials
    are created as Secrets (`openan-db-credentials`, `openan-admin`,
    `openan-llm-keys`) and referenced — never inlined into the values file.
-6. `helm install`s the chart from the bundled copy with a generated values file.
+6. Deploys the chart with `helm upgrade --install` and a generated values
+   file — a fresh cluster gets a plain install, an existing release is
+   upgraded in place (see below).
 7. **Self-checks**: pods ready, registry catalog reachable, API smoke tests.
 
-## Re-running and uninstalling
+## Re-running, changing configuration and uninstalling
 
-- The installer is idempotent for infrastructure (existing registry, MetalLB and
-  ingress-nginx are reused). If the Helm release `openan` already exists it
-  **aborts** — this version does not support upgrades. Run `uninstall.sh` first.
-- `scripts/uninstall.sh` removes the release, the in-cluster registry, optionally
-  the persistent volumes and the namespace. It never edits `containerd`; the
-  insecure-registry reminder is printed for you to apply manually.
+The installer is idempotent: existing infrastructure (registry, MetalLB,
+ingress-nginx) and Secrets are reused. When the Helm release `openan` already
+exists, re-running `scripts/install.sh` **upgrades it in place** (`helm upgrade
+--install` with the values regenerated from the current answers) — no
+`uninstall.sh` needed, PVCs and Helm revision history are preserved.
+
+**Changing the configuration after installation** — pick the flow that fits:
+
+```bash
+# A. Change config.env and re-run the installer (regenerates config.values.yaml)
+vi config.env                       # e.g. image tags, INGRESS_HOST, replicas
+sudo scripts/install.sh --config config.env
+
+# B. One-field change applied directly with Helm (everything else kept)
+helm upgrade openan ./chart -n openan --reuse-values --set https.enabled=false
+```
+
+Two things to know about flow A:
+
+- **Secrets are reused, not rotated.** `DB_PASSWORD`, `OC_ADMIN_PASSWORD` and
+  LLM API keys land in Secrets once; changing them in `config.env` does *not*
+  update an existing Secret. Rotate explicitly, then re-run:
+
+  ```bash
+  kubectl -n openan delete secret openan-db-credentials   # or openan-admin, openan-llm-keys
+  ```
+
+- **New image tags must also be in the registry.** Re-running the installer
+  re-pushes every image from `images/`, so a new bundle version upgrades the
+  deployed version end to end; with flow B, push the image first
+  (`scripts/push-images.sh`) or `IfNotPresent` keeps the old one running.
+
+**Inspecting the deployed state** — the installer never writes rendered
+manifests to disk; Helm keeps them in the release history, which is the source
+of truth for what is running:
+
+```bash
+helm get values openan -n openan      # values the release was last deployed with
+helm get manifest openan -n openan     # fully rendered Kubernetes manifests
+helm history openan -n openan         # revision history (upgrade keeps it)
+helm rollback openan <rev> -n openan   # undo a failed or unwanted upgrade
+```
+
+`helm get manifest` is the rendered chart output after values and templates
+were applied — exactly what is running. Add `--revision N` to inspect an older
+revision; the output is plain YAML, so it can be diffed between revisions for
+audits or troubleshooting.
+
+`scripts/uninstall.sh` removes the release, the in-cluster registry, optionally
+the persistent volumes and the namespace. It never edits `containerd`; the
+insecure-registry reminder is printed for you to apply manually.
 
 ## Image packaging
 

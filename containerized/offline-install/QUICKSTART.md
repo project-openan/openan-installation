@@ -175,7 +175,9 @@ The installer will:
    for the exact per-node setup.
 3. Push all bundle images and stitch multi-arch manifest lists.
 4. Install MetalLB (optional) and ingress-nginx offline.
-5. `helm install` the OpenAN chart with a generated values file.
+5. `helm upgrade --install` the OpenAN chart with a generated values file
+   (plain install on a fresh cluster, in-place upgrade of an existing
+   release).
 6. Self-check: pods ready, registry catalog reachable, API smoke tests.
 
 ## Verify
@@ -457,6 +459,52 @@ default — log in with the OC admin account (`OC_ADMIN_PASSWORD` in
 `config.env`, required)) or `workflow-designer` (legacy).
 The bundle ships both frontend images, so the choice is install-time.
 
+## Changing configuration and upgrading
+
+The installer is re-runnable: against an existing release it **upgrades in
+place** (`helm upgrade --install` with the values regenerated from your
+answers). PVCs and data are preserved, and the Helm revision history is kept,
+so a failed upgrade can be rolled back.
+
+Typical flows:
+
+```bash
+# 1. Review what is currently deployed first
+helm get values openan -n openan       # values of the last deployment
+helm get manifest openan -n openan     # fully rendered Kubernetes manifests
+helm history openan -n openan          # revision history
+
+# 2a. Change configuration: edit config.env and re-run the installer
+vi config.env                           # image tags, INGRESS_HOST, replicas, ...
+sudo scripts/install.sh --config config.env
+
+# 2b. Or apply a single change directly with Helm (everything else kept)
+helm upgrade openan ./chart -n openan --reuse-values --set https.enabled=false
+```
+
+Notes:
+
+- **Rendered manifests live in Helm, not on disk.** The bundle keeps the chart
+  (`chart/`) and the generated values file (`config.values.yaml`), but nothing
+  rendered; `helm get manifest openan -n openan` shows exactly what is running,
+  and `--revision N` inspects older revisions (plain YAML — diff-friendly for
+  audits and troubleshooting).
+- **Secrets are reused, not rotated.** `DB_PASSWORD`, `OC_ADMIN_PASSWORD` and
+  LLM API keys go into Secrets once; editing them in `config.env` does **not**
+  update an existing Secret. To rotate one, delete it and re-run:
+
+  ```bash
+  kubectl -n openan delete secret openan-db-credentials   # then re-run install.sh
+  ```
+
+- **Upgrading to a new OpenAN version**: unpack the new bundle (or replace the
+  image tars), keep `config.env`, update the image tags if needed and re-run
+  `install.sh` — images are re-pushed to the in-cluster registry and the
+  release is upgraded.
+- **Rollback** is available for any mistake: `helm history openan -n openan`
+  shows the revisions, `helm rollback openan <revision> -n openan` restores
+  one.
+
 ## Uninstall
 
 ```bash
@@ -464,7 +512,10 @@ scripts/uninstall.sh --config config.env
 ```
 
 Removes the Helm release, the in-cluster registry, and optionally the
-persistent volumes and namespace.
+persistent volumes and namespace. Uninstalling is only for a full teardown —
+configuration changes and version upgrades go through
+[Changing configuration and upgrading](#changing-configuration-and-upgrading)
+instead.
 
 ---
 
@@ -477,6 +528,9 @@ persistent volumes and namespace.
   [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) §2.2 on every node.
 - **Switching the services to plain HTTP** — one switch re-points everything;
   see [Disabling in-cluster HTTPS](#disabling-in-cluster-https-plain-http-backends).
-- **Re-running install** — infrastructure steps are idempotent, but if the Helm
-  release `openan` already exists the installer aborts; run `uninstall.sh`
-  first (this version does not support upgrades).
+- **Re-running install** — everything is idempotent: infrastructure and
+  Secrets are reused, and an existing Helm release is upgraded in place
+  (`helm upgrade --install`); see
+  [Changing configuration and upgrading](#changing-configuration-and-upgrading).
+  Secrets are reused, not rotated — delete a Secret before re-running to
+  force a new credential.

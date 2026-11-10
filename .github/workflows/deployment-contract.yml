@@ -24,6 +24,7 @@ jobs:
           bash -n containerized/online-install/install.sh
           bash -n containerized/build/build.sh
           bash -n containerized/build/portal/build-portal-image.sh
+          find containerized/offline-install/scripts -name '*.sh' -exec bash -n {} \;
           find containerized/offline-install-compose -name '*.sh' -exec bash -n {} \;
   offline-compose-container:
     runs-on: ubuntu-latest
