@@ -33,6 +33,41 @@ def test_external_port_is_consumed_by_both_services(db, port, expected):
         assert docs[component + "-center-config"]["data"]["DB_PORT"] == expected
 
 
+@pytest.mark.parametrize("db,port", [("gauss", 5432), ("oracle", 1521)])
+def test_external_type_passthrough_flows_to_services(db, port):
+    # issue #36: any backend the services support works as external SQL
+    # with zero chart changes — the type passes through to PERSISTENCE_MODE.
+    docs = render(external(db, port))
+    for component in ("registry", "orchestration"):
+        config = docs[component + "-center-config"]["data"]
+        assert config["PERSISTENCE_MODE"] == db
+        assert config["DB_HOST"] == "sql.example"
+        assert config["DB_PORT"] == str(port)
+
+
+def test_external_type_without_port_fails_with_clear_message():
+    # Unknown types carry no default port: the omission must fail at render
+    # time, not deploy a bogus port.
+    assert "no default port is known" in render(external("gauss"), success=False)
+
+
+def test_external_type_requires_host_and_bundled_conflict_fails():
+    # A non-postgresql type conflicts with the bundled postgres StatefulSet.
+    settings = {"database.type": "gauss", "database.port": 5432,
+                "database.registry.existingSecret": "rc-db",
+                "database.orchestration.existingSecret": "oc-db"}
+    assert "requires postgresql.enabled=false" in render(settings, success=False)
+    # With the bundle disabled but no host, the omission must fail loudly.
+    settings.update({"postgresql.enabled": False})
+    assert "is external: set database.host" in render(settings, success=False)
+
+
+def test_external_type_requires_per_service_secret():
+    settings = external("gauss", 5432)
+    del settings["database.registry.existingSecret"]
+    assert "database.registry.existingSecret is required" in render(settings, success=False)
+
+
 def test_bundled_pg_uses_its_listener_not_external_port():
     docs = render({"postgresql.port": 5545, "database.port": 3344})
     assert docs["registry-center-config"]["data"]["DB_PORT"] == "5545"

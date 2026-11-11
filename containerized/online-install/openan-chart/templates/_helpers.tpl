@@ -128,16 +128,21 @@ PostgreSQL host
 {{- end }}
 {{- end }}
 {{- define "openan.databaseHost" -}}
-{{- if and (eq .Values.database.type "mysql") .Values.postgresql.enabled -}}{{ fail "mysql requires postgresql.enabled=false" }}{{- end -}}
+{{- if and (ne .Values.database.type "postgresql") .Values.postgresql.enabled -}}{{ fail (printf "database.type '%s' requires postgresql.enabled=false (only postgresql is bundled)" .Values.database.type) }}{{- end -}}
 {{- if and (eq .Values.database.type "postgresql") .Values.postgresql.enabled -}}openan-postgres
-{{- else -}}{{ required "external SQL requires a host" (default .Values.postgresql.externalHost .Values.database.host) }}
+{{- else -}}{{ required (printf "database.type '%s' is external: set database.host" .Values.database.type) (default .Values.postgresql.externalHost .Values.database.host) }}
 {{- end -}}
 {{- end -}}
 {{- define "openan.databasePort" -}}
 {{- if and (eq .Values.database.type "postgresql") .Values.postgresql.enabled -}}
 {{- .Values.postgresql.port -}}
 {{- else -}}
-{{- if eq .Values.database.port nil -}}{{- ternary 5432 3306 (eq .Values.database.type "postgresql") -}}{{- else -}}{{- .Values.database.port -}}{{- end -}}
+{{- if eq .Values.database.port nil -}}
+{{- if eq .Values.database.type "postgresql" -}}5432
+{{- else if eq .Values.database.type "mysql" -}}3306
+{{- else -}}{{ fail (printf "database.type '%s' is external: set database.port (no default port is known for it)" .Values.database.type) }}
+{{- end -}}
+{{- else -}}{{- .Values.database.port -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{/* Probe DNS names must resolve inside the probed Pod, not through a Service

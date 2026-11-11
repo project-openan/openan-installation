@@ -27,11 +27,11 @@
 #       -f example.values.yaml
 #
 # config.env -> this file: every chart-expressible installer key maps here —
-#   K8S_NAMESPACE -> namespace                DB_TYPE/DB_PASSWORD -> database.type + *.existingSecret
+#   K8S_NAMESPACE -> namespace                DB_TYPE/DB_PASSWORD -> database.type + database.existingSecret
 #   INGRESS_HOST -> ingress.host              *_IMAGE -> *.image.repository/tag
 #   FRONTEND_TYPE -> frontend.type            *_CHAT_{MODEL,URL,APIKEY} -> *.llm.chat.*
 #   HTTPS_* / *_TLS_SECRET -> https.* / *.tls.existingSecret / ingressClientSecret
-#   STORAGE_* -> mysql|postgresql.storage.*   OC_ADMIN_PASSWORD -> orchestration.admin.existingSecret
+#   STORAGE_* -> database.storage.*           OC_ADMIN_PASSWORD -> orchestration.admin.existingSecret
 # Installer-only keys with NO chart equivalent stay prerequisites:
 #   INSTALL_REGISTRY / REGISTRY_NODE* (registry bootstrap), INSTALL_METALLB /
 #   METALLB_POOL (infra), LLM_VALIDATE (pre-install probe), START_AGENTS_SERVER
@@ -39,22 +39,19 @@
 
 namespace: openan
 
+# One type flows through every layer: a type listed in database.backends
+# deploys the bundled in-cluster StatefulSet (image override below); any
+# other type (gauss, oracle, ...) is an EXTERNAL database — set host, port
+# and existingSecret/passwordKey, and the type reaches the services verbatim.
 database:
-  type: mysql  # mysql (bundled) or postgresql
-
-https:
-  enabled: true
-  verifyClient: false  # mTLS on the registry listener (kubelet probes present no client cert)
-
-postgresql:
-  enabled: false
-  existingSecret: openan-db-credentials  # key: postgres-password
-  image: "<REG_HOST>/library/postgres:15-alpine"  # used when database.type=postgresql
-
-mysql:
-  enabled: true
-  existingSecret: openan-db-credentials  # key: mysql-root-password
-  image: "<REG_HOST>/library/mysql:8.4.3"
+  type: mysql  # bundled: mysql | postgresql; anything else = external
+  existingSecret: openan-db-credentials  # keys per backend descriptor (mysql-root-password / postgres-password)
+  # External database instead of the bundled one:
+  # type: gauss
+  # host: gauss.internal.example.com
+  # port: 5432
+  # existingSecret: openan-db-credentials
+  # passwordKey: password      # key carrying the credential in that Secret
   storage:
     size: 20Gi
     storageClassName: ""  # cluster default StorageClass
@@ -62,8 +59,17 @@ mysql:
     # createStorageClass: true
     # createPV: true
     # useHostPath: true
-    # hostPath: "/data/openan-mysql"
     # nodeName: node185
+  # Bundled-backend overrides (defaults live in chart values.yaml):
+  backends:
+    mysql:
+      image: "<REG_HOST>/library/mysql:8.4.3"
+    postgresql:
+      image: "<REG_HOST>/library/postgres:15-alpine"
+
+https:
+  enabled: true
+  verifyClient: false  # mTLS on the registry listener (kubelet probes present no client cert)
 
 registry:
   enabled: true

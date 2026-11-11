@@ -1,0 +1,108 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{/* Generic bundled-database workload: one template renders ANY entry of
+     database.backends (image, env, probes, volumes and ports all come from
+     the descriptor). Adding a bundled backend = one values entry + one init
+     ConfigMap (database/init/<type>.yaml) — never a new template here. */}}
+{{- $type := include "openan.dbType" . }}
+{{- $backend := index .Values.database.backends $type }}
+{{- if $backend }}
+{{- $port := include "openan.dbPort" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: openan-{{ $backend.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.db.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "openan.db.selectorLabels" . | nindent 4 }}
+  ports:
+  - port: {{ $port }}
+    targetPort: {{ $port }}
+    protocol: TCP
+    name: {{ $backend.name }}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openan-{{ $backend.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.db.labels" . | nindent 4 }}
+spec:
+  serviceName: openan-{{ $backend.name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "openan.db.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "openan.db.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: {{ $backend.name }}
+        image: "{{ $backend.image }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: {{ $port }}
+        {{- with $backend.args }}
+        args:
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+        env:
+        {{- range $backend.env }}
+        - name: {{ .name }}
+          value: {{ .value | quote }}
+        {{- end }}
+        - name: {{ $backend.passwordEnv }}
+          {{- if $.Values.database.existingSecret }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ $.Values.database.existingSecret }}
+              key: {{ $backend.passwordKey }}
+          {{- else }}
+          value: {{ $.Values.database.password | quote }}
+          {{- end }}
+        readinessProbe:
+          exec:
+            command:
+            {{- toYaml $backend.readinessProbe.command | nindent 12 }}
+          initialDelaySeconds: {{ $backend.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ $backend.readinessProbe.periodSeconds }}
+        livenessProbe:
+          exec:
+            command:
+            {{- toYaml $backend.livenessProbe.command | nindent 12 }}
+          initialDelaySeconds: {{ $backend.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ $backend.livenessProbe.periodSeconds }}
+        resources:
+          {{- toYaml $backend.resources | nindent 10 }}
+        volumeMounts:
+        - name: {{ $backend.dataVolume.name }}
+          mountPath: {{ $backend.dataVolume.mountPath }}
+        - name: init-script
+          mountPath: {{ $backend.initMountPath }}
+      volumes:
+      - name: init-script
+        configMap:
+          name: openan-{{ $backend.name }}-init
+  volumeClaimTemplates:
+  - metadata:
+      name: {{ $backend.dataVolume.name }}
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.database.storage.size }}
+      {{- if .Values.database.storage.storageClassName }}
+      storageClassName: {{ .Values.database.storage.storageClassName }}
+      {{- end }}
+{{- end }}
