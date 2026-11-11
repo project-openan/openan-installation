@@ -14,6 +14,10 @@
 #   scripts/install.sh                       # interactive
 #   scripts/install.sh --config config.env   # non-interactive
 #   scripts/install.sh --config config.env --yes --skip-check
+#
+# Re-running against an existing release upgrades it in place
+# (helm upgrade --install): infrastructure and Secrets are reused, the
+# values file is regenerated from the current answers.
 
 set -euo pipefail
 
@@ -34,7 +38,7 @@ while [ $# -gt 0 ]; do
                       CONFIG_FILE="$2"; shift 2 ;;
         --yes|-y)     ASSUME_YES="true"; shift ;;
         --skip-check) SKIP_CHECK="true"; shift ;;
-        -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
+        -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
         *) log_error "Unknown argument: $1"; exit 2 ;;
     esac
 done
@@ -263,6 +267,14 @@ fi
 REF_REPO() { echo "${1%:*}"; }
 REF_TAG()  { echo "${1##*:}"; }
 
+# Existing release? helm upgrade --install is idempotent: a fresh cluster gets
+# a plain install, an existing release is upgraded in place with the
+# regenerated values file. PVCs and Helm history are preserved.
+RELEASE_ACTION="install"
+if "$HELM" status openan -n "$K8S_NAMESPACE" >/dev/null 2>&1; then
+    RELEASE_ACTION="upgrade"
+fi
+
 echo ""
 echo "=========================================="
 echo "  Offline installation summary"
@@ -291,6 +303,9 @@ else
     echo "  Frontend image:   $WORKFLOW_DESIGNER_IMAGE"
 fi
 echo "  Sample agents:    $START_AGENTS_SERVER"
+if [ "$RELEASE_ACTION" = "upgrade" ]; then
+    echo "  Deploy mode:      upgrade — existing release 'openan' is upgraded in place"
+fi
 echo "=========================================="
 echo ""
 
@@ -779,16 +794,21 @@ emit_db_storage() {
 )
 chmod 600 "$VALUES"
 
-if "$HELM" status openan -n "$K8S_NAMESPACE" >/dev/null 2>&1; then
-    log_error "Helm release 'openan' already exists in namespace '$K8S_NAMESPACE'."
-    log_error "This version does not support upgrades. Run scripts/uninstall.sh first."
-    exit 1
+# helm upgrade --install is idempotent: plain install on a fresh cluster,
+# in-place upgrade when the release exists. Revision history is kept, so
+# `helm rollback openan -n <ns>` can undo a failed upgrade.
+if [ "$RELEASE_ACTION" = "upgrade" ]; then
+    log_info "Existing Helm release 'openan' found — upgrading in place"
+    log_warn "Existing Secrets are reused, not rotated: changing DB_PASSWORD /"
+    log_warn "OC_ADMIN_PASSWORD / LLM keys in config.env does not update them."
+    log_warn "To rotate a credential, delete its Secret first and re-run, e.g.:"
+    log_warn "  kubectl -n $K8S_NAMESPACE delete secret openan-db-credentials"
 fi
 
-if ! "$HELM" install openan "$BUNDLE_DIR/chart" \
+if ! "$HELM" upgrade --install openan "$BUNDLE_DIR/chart" \
     -n "$K8S_NAMESPACE" --create-namespace \
     -f "$VALUES"; then
-    log_error "helm install failed"
+    log_error "helm $RELEASE_ACTION failed"
     exit 1
 fi
 
@@ -898,7 +918,11 @@ else
     echo "  Access URL (NodePort): http://${NODE_IP}:${NODE_PORT}/"
 fi
 echo ""
-echo "  Status:  $KUBECTL -n $K8S_NAMESPACE get pods,ingress,svc"
+echo "  Status:    $KUBECTL -n $K8S_NAMESPACE get pods,ingress,svc"
+echo "  Values:    $HELM get values openan -n $K8S_NAMESPACE"
+echo "  Manifest:  $HELM get manifest openan -n $K8S_NAMESPACE"
+echo "  History:   $HELM history openan -n $K8S_NAMESPACE"
+echo "  Redeploy:  edit config.env, re-run scripts/install.sh (upgrades in place)"
 echo "  Uninstall: scripts/uninstall.sh --config $BUNDLE_DIR/config.env"
 echo ""
 
@@ -906,4 +930,4 @@ if [ "$SELFCHECK" != "ok" ]; then
     log_error "Deployment finished with errors — inspect the pods above."
     exit 1
 fi
-log_info "Installation complete."
+log_info "Installation complete ($RELEASE_ACTION; helm history openan -n $K8S_NAMESPACE shows revisions)."

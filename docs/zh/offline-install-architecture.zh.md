@@ -9,7 +9,7 @@
 | 组成部分 | 产物 | 职责 |
 |------|----------|------|
 | Helm chart | `chart/` | OpenAN 工作负载的声明式资源定义 |
-| 安装器 | `scripts/install.sh`（含 `check-env.sh`、`push-images.sh`、`lib/common.sh`） | 编排配置、集群内镜像仓库、基础设施插件与 `helm install` |
+| 安装器 | `scripts/install.sh`（含 `check-env.sh`、`push-images.sh`、`lib/common.sh`） | 编排配置、集群内镜像仓库、基础设施插件与 `helm upgrade --install` |
 | Bundle | 由 `build/build-offline.sh` 产出 | 按架构分离的镜像 tar、固定版本二进制（helm/kubectl/crane）、固定版本基础设施清单、chart、脚本、`SHA256SUMS` |
 
 安装器**全程不使用互联网，也不修改操作系统或容器运行时配置**（`scripts/install.sh:9`）。镜像通过集群内 `registry:2` 分发，由bundle自带的 [crane](https://github.com/google/go-containerregistry) 以明文HTTP推送。
@@ -18,13 +18,13 @@
 
 - 目标：一个可运行的kubeadm风格集群（按 `chart/Chart.yaml` 的 `kubeVersion` 要求v1.33+），安装节点可通过 `kubectl` 访问，且对节点containerd有 `ctr` 权限。
 - 在MetalLB与ingress-nginx缺失时，从 **bundle内固定版本清单**安装二者。
-- 首次运行支持交互（提示输入、密钥掩码），也可通过 `config.env` 全配置驱动重跑。
+- 首次运行支持交互（提示输入、密钥掩码），也可通过 `config.env` 全配置驱动重跑；对已存在的release重跑即**原地升级**（`helm upgrade --install`，保留版本历史可供 `helm rollback`）。
 
 ### 非目标
 
 - 集群创建（参考 [docs/KUBEADM_CLUSTER.md](../../containerized/offline-install/docs/KUBEADM_CLUSTER.md) 中仅作参考的离线kubeadm构建方案）。
 - 明文HTTP镜像仓库的containerd信任配置 —— 这是逐节点的手工前置条件（`docs/DEPENDENCIES.md` §2.2）；安装器只对本地节点做**探测**。
-- 版本升级：安装器在Helm release `openan` 已存在时**直接终止**（`install.sh:769-773`）；重新部署 = 卸载 + 安装。
+- 零停机滚动语义：chart的Deployment使用 `Recreate`，升级期间会短暂停服（见部署契约）。
 - 在线/交互安装线与Compose安装线（见 [online-install-architecture.zh.md](online-install-architecture.zh.md) 与 [offline-install-compose-architecture.zh.md](offline-install-compose-architecture.zh.md)）。
 
 ---
@@ -113,7 +113,7 @@ flowchart LR
     P3[3/7 汇总 + 确认<br/>save_config 600]
     P4[4/7 私有镜像仓库<br/>ctr import + 部署]
     P5[5/7 推送镜像 + 插件<br/>crane、MetalLB、ingress-nginx]
-    P6[6/7 helm install<br/>config.values.yaml 600]
+    P6[6/7 helm upgrade --install<br/>config.values.yaml 600]
     P7[7/7 验证<br/>pods、catalog、smoke、agents]
     P1-->P2-->P3-->P4-->P5-->P6-->P7
 ```
@@ -123,7 +123,7 @@ flowchart LR
 - **确认 + 持久化**：生效配置回写 `config.env`（`config.env.example` 的37个键加save_config另回写的 `K8S_NAMESPACE`、`PUBLIC_TLS_SECRET`，共39个键，chmod 600），使重跑免交互。
 - **私有镜像仓库**：唯一直接导入containerd的镜像（`ctr -n k8s.io images import`，`install.sh:335-343`）；registry自身以该本地镜像运行，`imagePullPolicy: Never`。
 - **推送镜像**：`push-images.sh` 使用crane —— 单架构tar直接推送到最终tag；多架构tar推送到 `<tag>-<arch>` 副tag，再用 `crane index append --insecure` 拼装manifest list（`push-images.sh:93-107`）。crane走明文HTTP，无需Docker守护进程。
-- **Helm install**：生成 `config.values.yaml`（chmod 600）；release已存在时安装**直接终止** —— 无升级路径。
+- **Helm upgrade --install**：生成 `config.values.yaml`（chmod 600）；release已存在时**原地升级** —— 复用既有基础设施与Secret、保留版本历史（`helm rollback` 可回退）。已渲染清单与部署values随时可用 `helm get manifest` / `helm get values` 取回。
 - **验证**：所有Pod Running（60×5s）、registry catalog、可选示例智能体服务（`START_AGENTS_SERVER` → `kubectl exec` nohup启动 `samples/start_agents_server.py`，尽力而为），以及3条公开路径的HTTP smoke测试。
 
 ### 3.2 注册中心 / 编排中心（Deployment）

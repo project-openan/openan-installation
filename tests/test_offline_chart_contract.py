@@ -378,6 +378,20 @@ def test_installer_emits_frontend_backend_tls():
     assert "INGRESS_CLIENT_SECRET" in text
 
 
+def test_installer_deploys_with_helm_upgrade_install():
+    # Re-running the installer upgrades an existing release in place instead
+    # of aborting: the deploy step must be the idempotent helm upgrade
+    # --install (revision history kept for rollback) and the legacy
+    # "does not support upgrades" refusal must stay gone.
+    text = (ROOT / "containerized/offline-install/scripts/install.sh").read_text(encoding="utf-8")
+    assert '"$HELM" upgrade --install openan' in text
+    assert '"$HELM" install openan' not in text
+    assert "does not support upgrades" not in text
+    # Upgrade mode is detected before the confirmation summary so the
+    # operator sees what a re-run will do.
+    assert "RELEASE_ACTION" in text
+
+
 def test_oc_verify_client_follows_values():
     # The OC image defaults to ORCH_VERIFY_CLIENT=true; without the configmap
     # override, the OC always requires client certificates regardless of the

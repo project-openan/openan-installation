@@ -12,7 +12,7 @@ parts:
 | Part | Artifact | Role |
 |------|----------|------|
 | Helm chart | `chart/` | Declarative resource definitions for the OpenAN workloads |
-| Installer | `scripts/install.sh` (+ `check-env.sh`, `push-images.sh`, `lib/common.sh`) | Orchestrates configuration, the in-cluster registry, infra add-ons and `helm install` |
+| Installer | `scripts/install.sh` (+ `check-env.sh`, `push-images.sh`, `lib/common.sh`) | Orchestrates configuration, the in-cluster registry, infra add-ons and `helm upgrade --install` |
 | Bundle | produced by `build/build-offline.sh` | Per-arch image tars, pinned binaries (helm/kubectl/crane), pinned infra manifests, chart, scripts, `SHA256SUMS` |
 
 The installer **never uses the internet and never edits the OS or the
@@ -28,7 +28,9 @@ runs through an in-cluster `registry:2` populated with the bundled
 - Installs MetalLB and ingress-nginx from **pinned manifests inside the
   bundle** when they are absent.
 - Interactive first run (prompts, masked secrets) or fully config-driven
-  re-runs via `config.env`.
+  re-runs via `config.env`; a re-run against an existing release upgrades it
+  in place (`helm upgrade --install`, revision history kept for
+  `helm rollback`).
 
 ### Non-goals
 
@@ -37,8 +39,8 @@ runs through an in-cluster `registry:2` populated with the bundled
 - Containerd trust configuration for the plain-HTTP registry — a manual
   per-node prerequisite (`docs/DEPENDENCIES.md` §2.2); the installer only
   **detects** it for the local node.
-- Release upgrades: the installer **aborts if Helm release `openan` already
-  exists** (`scripts/install.sh:516-520`); redeploy = uninstall + install.
+- Zero-downtime rolling semantics: the chart's Deployments use `Recreate`;
+  an upgrade briefly interrupts service (see the deployment contract).
 - The online/interactive line and the Compose line (see
   `online-install-architecture.en.md` and `offline-install-compose-architecture.en.md`).
 
@@ -132,7 +134,7 @@ flowchart LR
     P3[3/7 Summary + confirm<br/>save_config 600]
     P4[4/7 Private registry<br/>ctr import + deploy]
     P5[5/7 Push images + add-ons<br/>crane, MetalLB, ingress-nginx]
-    P6[6/7 helm install<br/>config.values.yaml 600]
+    P6[6/7 helm upgrade --install<br/>config.values.yaml 600]
     P7[7/7 Verify<br/>pods, catalog, smoke, agents]
     P1-->P2-->P3-->P4-->P5-->P6-->P7
 ```
@@ -155,8 +157,11 @@ flowchart LR
   side tags and stitched into a manifest list with
   `crane index append --insecure` (`push-images.sh:93-107`). Crane speaks
   plain HTTP and needs no Docker daemon.
-- **Helm install**: `config.values.yaml` is generated (chmod 600) and the
-  install **aborts if the release exists** — no upgrade path.
+- **Helm upgrade --install**: `config.values.yaml` is generated (chmod 600);
+  an existing release is upgraded in place — infrastructure and Secrets are
+  reused, revision history is kept, `helm rollback` can undo it. Rendered
+  manifests and deployed values are retrievable any time with
+  `helm get manifest` / `helm get values`.
 - **Verify**: all pods Running (60×5s), registry catalog, optional agent
   examples server (`START_AGENTS_SERVER` → `kubectl exec` nohup
   `samples/start_agents_server.py`, best-effort), HTTP smoke tests on the
