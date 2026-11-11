@@ -74,8 +74,11 @@ you.
 
 ## Database selection
 
-`DB_TYPE` in `config.env` selects the database backend. One type flows
-through every layer (issue #36):
+`DB_TYPE` in `config.env` selects the database backend. The type space is
+**open by design** (issue #36): the installers and charts enumerate no
+database types as an architectural limit — bundled backends are a data
+table (`database.backends`), external backends pass through to the services
+with zero chart changes. What ships today:
 
 | `DB_TYPE` | Mode | Bundled image |
 |---|---|---|

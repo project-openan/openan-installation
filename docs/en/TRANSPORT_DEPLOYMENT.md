@@ -25,12 +25,7 @@ with a Git revision when available (otherwise unknown).
 
 ## Configuration responsibilities
 
-- `database.type`: `postgresql` is the only bundled backend; every other type
-  (mysql, gauss, oracle, ...) is external SQL whose type reaches the services
-  verbatim (PERSISTENCE_MODE). `postgresql.enabled` controls only the bundled
-  PostgreSQL. The services must support the type (registry-center: file,
-  sqlite, postgresql, gauss, mysql; orchestration-center currently: file,
-  postgresql, mysql).
+- `database.type` is an open contract: the chart enumerates no types. The bundled (in-cluster) set is the `database.backends` data table (offline: postgresql, mysql; online: postgresql); every other type is external SQL that reaches the services verbatim (PERSISTENCE_MODE). The services own the mode list (registry-center: file, sqlite, postgresql, gauss, mysql; orchestration-center currently: file, postgresql, mysql). `postgresql.enabled` controls only the bundled PostgreSQL.
 - External `database.host/port`: null/omitted port selects PostgreSQL 5432 or
   MySQL 3306; any other external type requires an explicit integer port
   (1..65535, no default is known). Bundled PostgreSQL instead uses

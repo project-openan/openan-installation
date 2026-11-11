@@ -429,7 +429,7 @@ registry-center为每个AgentCard加JWS签名。签名材料独立于TLS：
 
 ### 7.2 新增数据库后端
 
-外部后端**零chart改动**（issue #36）：除 `postgresql` 外的任何 `database.type` 都按外部SQL处理 —— 设置 `database.type`/`host`/`port`（+ 每服务 `database.<app>.existingSecret`），类型原样透传给服务（`PERSISTENCE_MODE` 直通）。唯一硬前提是服务侧支持（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql），且未知类型必须显式设置 `database.port`（无默认端口）。PostgreSQL仍是唯一内置（集群内）后端；如需将新后端提升为内置，参照offline chart的描述符模式（`database.backends` + 单一通用工作负载模板）。
+类型空间**设计上是开放的** —— chart不把任何数据库类型枚举为架构边界。除 `postgresql` 外的任何 `database.type` 均按外部SQL处理：设置 `database.type`/`host`/`port`（+ 每服务 `database.<app>.existingSecret`），类型原样透传给服务（`PERSISTENCE_MODE` 直通），**零chart改动**。前置条件是服务侧支持（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql —— 这是chart透传的服务约束而非chart施加的限制），且未知类型必须显式设置 `database.port`（无默认端口）。PostgreSQL只是当前内置集合中的唯一条目；将新后端提升为内置遵循offline chart的数据驱动模式（`database.backends` 描述符 + 单一通用工作负载模板），而非per-type模板。
 
 ### 7.3 新增前端类型
 

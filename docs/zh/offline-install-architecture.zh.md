@@ -141,12 +141,11 @@ flowchart LR
 
 ### 3.4 数据库与存储
 
-一个 `database.type` 贯穿所有层（issue #36）：
+数据库契约**设计上是开放的**（issue #36）：chart与安装器都不把数据库类型枚举为架构边界。服务支持的任意后端均可使用 —— 要么作为外部SQL数据库（零chart改动），要么经由文档化的纯数据扩展路径作为内置集群内后端。`database.backends` 当前条目只是库存，不是限制：
 
-- **内置后端** —— `postgresql` 与 `mysql` 列在chart的 `database.backends` 描述表里（数据而非代码）：镜像、端口、密码env/key、探针、卷与PV默认值均来自描述项。一对通用模板（`database/statefulset.yaml` + `database/storage.yaml`）按 `database.type` 渲染对应条目；仅初始化ConfigMap（`database/init/<type>.yaml`）按后端各一份，因为引导SQL方言不同。工作负载名、标签、env、探针与PV名与历史per-type模板完全一致，release升级时selector兼容。
-- **外部后端** —— 任何其他非空小写类型（如 `gauss`）**不渲染数据库工作负载与存储**：类型原样透传给服务（`PERSISTENCE_MODE` 直通），配通用 `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME` env；凭证经 `database.existingSecret` 按 `database.passwordKey` 读取。安装器对外部类型强制 `DB_HOST` + `DB_PORT`（`config.env`）；服务侧必须支持该mode（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql）。
-- **MySQL 8.4.3是本线默认**（`DB_TYPE=mysql`）；PostgreSQL 15仍可选择。chart自身默认保持 `postgresql`；安装器总是显式输出 `database.type`（+ 集群内镜像源的backend镜像覆盖，外部类型则输出 host/port）。
-- 内置后端均为单副本StatefulSet，使用utf8mb4（mysql参数）与init脚本创建 `registry_center`/`registry` 与 `orchestration_center`/`opena2a_t`。
+- **扩展路径 A —— 内置后端即数据。** chart的 `database.backends` 描述表（values.yaml）逐后端携带：镜像、端口、密码env/key、静态env、args、探针、数据卷、init挂载、PV/hostPath默认值、资源。一对通用模板（`database/statefulset.yaml` + `database/storage.yaml`）按 `database.type` 渲染对应条目；仅初始化ConfigMap（`database/init/<type>.yaml`）按后端各一份，因为引导SQL方言不同。新增内置后端 = 1 条描述项 + 1 个init文件 —— 永远不需要新的工作负载/存储模板，也不需要改校验或helpers。工作负载名、标签、selector与PV名在此类扩展中保持稳定，release升级始终兼容。
+- **扩展路径 B —— 外部后端零改动。** 任何没有 `database.backends` 条目的非空小写类型即外部SQL：不渲染数据库工作负载与存储；类型原样透传给服务（`PERSISTENCE_MODE` 直通），配通用 `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME` env，凭证经 `database.existingSecret` 按 `database.passwordKey` 读取。安装器对外部类型强制 `DB_HOST` + `DB_PORT`（`config.env`）。
+- **当前库存（数据）。** 内置：`mysql`（本线默认，`DB_TYPE=mysql`，`mysql:8.4.3`）与 `postgresql`（`postgres:15-alpine`）。chart自身默认保持 `postgresql`；安装器总是显式输出 `database.type`（内置类型附带集群内镜像源的镜像覆盖，外部类型附带 host/port）。内置后端均为单副本StatefulSet，使用utf8mb4（mysql参数）与init脚本创建 `registry_center`/`registry` 与 `orchestration_center`/`opena2a_t`。**服务侧**支持矩阵（安装器只透传、不施加的约束）：registry-center接受 file、sqlite、postgresql、gauss、mysql；orchestration-center 当前接受 file、postgresql、mysql。
 - **存储模式**（`STORAGE_MODE`）：`auto`（有默认StorageClass则用之，否则hostPath回退）、`sc`（显式 `STORAGE_CLASS`）、`hostpath`。回退路径创建 `openan-local` StorageClass与**节点固定** PV（`database/storage.yaml`，PV名来自backend描述项），保证多节点集群不会把数据库调度到数据所在节点之外。
 - MySQL模式保留自身默认hostPath（`/data/openan-mysql`，来自描述项；安装器保留历史的HOSTPATH切换逻辑）。
 

@@ -198,33 +198,42 @@ registry at the same host and skips both deploy and push.
 
 ### 3.4 Databases and storage
 
-One `database.type` flows through every layer (issue #36):
+The database contract is **open by design** (issue #36): neither the chart
+nor the installers enumerate database types as an architectural limit. Any
+backend the services support is usable — as an external SQL database with
+zero chart changes, or as a bundled in-cluster backend via a documented
+data-only extension path. What ships in `database.backends` today is
+inventory, not a constraint:
 
-- **Bundled backends** — `postgresql` and `mysql` are listed in the chart's
-  `database.backends` descriptor table (data, not code): image, port,
-  password env/key, probes, volumes and PV defaults. A single generic pair
-  of templates (`database/statefulset.yaml` + `database/storage.yaml`)
+- **Extension path A — bundled backends are data.** The chart's
+  `database.backends` descriptor table (values.yaml) carries per backend:
+  image, port, password env/key, static env, args, probes, data volume,
+  init mount, PV/hostPath defaults, resources. A single generic pair of
+  templates (`database/statefulset.yaml` + `database/storage.yaml`)
   renders whichever entry `database.type` selects; only the init ConfigMap
   (`database/init/<type>.yaml`) is per-backend, because the bootstrap SQL
-  dialect differs. Workload names, labels, env, probes and PV names are
-  identical to the historical per-type templates, so releases upgrade
-  selector-compatibly.
-- **External backends** — any other non-empty lowercase type (e.g. `gauss`)
-  deploys **no database workload or storage**: the type reaches the services
+  dialect differs. Adding a bundled backend = one descriptor entry + one
+  init file — never a new workload/storage template, and never a change to
+  validation or helpers. Workload names, labels, selectors and PV names
+  are stable across such additions, so releases stay upgrade-compatible.
+- **Extension path B — external backends need nothing.** Any non-empty
+  lowercase type without a `database.backends` entry is external SQL: no
+  database workload or storage renders; the type reaches the services
   verbatim (`PERSISTENCE_MODE` passthrough) with the generic
-  `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME` env, and the credential is read from
-  `database.existingSecret` via `database.passwordKey`. The installer
-  requires `DB_HOST` + `DB_PORT` for external types (`config.env`); the
-  services must support the mode (registry-center: file, sqlite,
-  postgresql, gauss, mysql; orchestration-center currently: file,
-  postgresql, mysql).
-- **MySQL 8.4.3 is the line default** (`DB_TYPE=mysql`); PostgreSQL 15
-  remains selectable. The chart's own default stays `postgresql`; the
-  installer always emits `database.type` (+ the backend image override from
-  the in-cluster registry, + external host/port for external types).
-- Both bundled backends are single-replica StatefulSets with utf8mb4
-  (mysql args) and an init script creating `registry_center`/`registry` and
-  `orchestration_center`/`opena2a_t`.
+  `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME` env, and the credential is read
+  from `database.existingSecret` via `database.passwordKey`. The installer
+  requires `DB_HOST` + `DB_PORT` for external types (`config.env`).
+- **Current inventory (data).** Bundled: `mysql` (the line default,
+  `DB_TYPE=mysql`, `mysql:8.4.3`) and `postgresql` (`postgres:15-alpine`).
+  The chart's own default stays `postgresql`; the installer always emits
+  `database.type` (+ the in-cluster-registry image override for bundled
+  types, + host/port for external types). Both bundled backends are
+  single-replica StatefulSets with utf8mb4 (mysql args) and an init script
+  creating `registry_center`/`registry` and
+  `orchestration_center`/`opena2a_t`. The *service-side* support matrix —
+  a service constraint the installers pass through, not one they impose —
+  is: registry-center accepts file, sqlite, postgresql, gauss, mysql;
+  orchestration-center currently accepts file, postgresql, mysql.
 - **Storage modes** (`STORAGE_MODE`): `auto` (default StorageClass when
   present, else hostPath fallback), `sc` (explicit `STORAGE_CLASS`),
   `hostpath`. The fallback creates the `openan-local` StorageClass

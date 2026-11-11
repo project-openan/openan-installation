@@ -20,7 +20,7 @@ English: [Deployment contract](TRANSPORT_DEPLOYMENT.md).
 
 ## 配置职责
 
-- database.type：`postgresql`是唯一内置后端；其余任何类型（mysql、gauss、oracle…）均为外部SQL，类型原样透传给服务（PERSISTENCE_MODE）。postgresql.enabled只决定是否创建内置PostgreSQL。服务侧必须支持该类型（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql）。
+- database.type是开放契约：chart不枚举任何类型。内置（集群内）集合即 `database.backends` 数据表（offline：postgresql、mysql；online：postgresql）；其余任何类型均为外部SQL，类型原样透传给服务（PERSISTENCE_MODE）。类型清单归服务所有（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql）。postgresql.enabled只决定是否创建内置PostgreSQL。
 - database.registry / database.orchestration分别配置库名、用户和密码Secret。两个服务不要共用业务库。
 - 内置PostgreSQL当前用postgresql.existingSecret的postgres-password同时初始化业务用户；独立业务密码Secret仅用于外部数据库，不能配置成与初始化密码不同。生产推荐外部数据库和独立用户凭据。
 - registry.tls / orchestration.tls分别控制各自侦听协议及客户端证书校验。

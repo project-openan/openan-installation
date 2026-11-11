@@ -516,17 +516,19 @@ All application pods run with:
 
 ### 7.2 Adding a new database backend
 
-External backends need **zero chart changes** (issue #36): any
-`database.type` other than `postgresql` is treated as external SQL — set
-`database.type`/`host`/`port` (+ `database.<app>.existingSecret` per
-service) and the type flows to the services verbatim
-(`PERSISTENCE_MODE` passthrough). The only hard prerequisite is service
-support (registry-center: file, sqlite, postgresql, gauss, mysql;
-orchestration-center currently: file, postgresql, mysql), and unknown
-types must set `database.port` explicitly (no default port is known).
-PostgreSQL stays the only bundled (in-cluster) backend; promoting a new
-backend to bundled would follow the offline chart's descriptor pattern
-(`database.backends` + one generic workload template).
+The type space is **open by design** — the chart enumerates no database
+types as an architectural limit. Any `database.type` other than
+`postgresql` is external SQL: set `database.type`/`host`/`port` (+
+`database.<app>.existingSecret` per service) and the type flows to the
+services verbatim (`PERSISTENCE_MODE` passthrough) with **zero chart
+changes**. The prerequisites are service support (registry-center: file,
+sqlite, postgresql, gauss, mysql; orchestration-center currently: file,
+postgresql, mysql — a service constraint the chart passes through) and an
+explicit `database.port` for unknown types (no default port is known).
+PostgreSQL is simply today's only entry in the bundled set; promoting a
+new backend to bundled follows the offline chart's data-driven pattern
+(`database.backends` descriptor + one generic workload template), not a
+per-type template.
 
 ### 7.3 Adding a new frontend type
 
