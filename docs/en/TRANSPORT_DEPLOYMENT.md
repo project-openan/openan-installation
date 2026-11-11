@@ -25,9 +25,16 @@ with a Git revision when available (otherwise unknown).
 
 ## Configuration responsibilities
 
-- `database.type`: postgresql/mysql. `postgresql.enabled` controls only bundled PostgreSQL; Helm MySQL is external.
-- External `database.host/port`: null/omitted port selects PostgreSQL 5432 or MySQL 3306; integer 1..65535.
-  Bundled PostgreSQL instead uses `postgresql.port`.
+- `database.type`: `postgresql` is the only bundled backend; every other type
+  (mysql, gauss, oracle, ...) is external SQL whose type reaches the services
+  verbatim (PERSISTENCE_MODE). `postgresql.enabled` controls only the bundled
+  PostgreSQL. The services must support the type (registry-center: file,
+  sqlite, postgresql, gauss, mysql; orchestration-center currently: file,
+  postgresql, mysql).
+- External `database.host/port`: null/omitted port selects PostgreSQL 5432 or
+  MySQL 3306; any other external type requires an explicit integer port
+  (1..65535, no default is known). Bundled PostgreSQL instead uses
+  `postgresql.port`.
 - `database.registry/orchestration`: separate names/users/password Secret references.
   Both services cannot use the same external database name at the shared host.
 - Bundled PostgreSQL initializes its users with the shared `postgresql.existingSecret/postgres-password`;

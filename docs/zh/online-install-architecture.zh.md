@@ -110,7 +110,7 @@ graph TB
 | ingress-nginx | 安装器阶段 [2/4] 或运维者 | 必须具有 `ingressClassName: nginx` |
 | MetalLB | 安装器阶段 [2/4] 或运维者 | 仅在裸金属上为 LoadBalancer IP 所需 |
 | 容器镜像 | `ghcr.io/project-openan`（默认） | `frontend.image.repository` 为空 → 由 `frontend.type` 派生 |
-| 外部 SQL | 运维者提供 | 经 `database.type` 使用 MySQL 或外部 PostgreSQL（需审查 values；向导仅支持集群内） |
+| 外部 SQL | 运维者提供 | 经 `database.type` 使用服务支持的任意后端（需审查 values；向导仅支持集群内） |
 | StorageClass | 运维者提供 | 无 StorageClass 时向导回退到节点固定的本地 hostPath PV |
 
 ---
@@ -429,7 +429,7 @@ registry-center为每个AgentCard加JWS签名。签名材料独立于TLS：
 
 ### 7.2 新增数据库后端
 
-`database.type` 字段是开放的（当前 `postgresql`|`mysql`）。在 `validate.yaml` 中加入新类型，在helpers中增加连接逻辑，并更新部署env接线。
+外部后端**零chart改动**（issue #36）：除 `postgresql` 外的任何 `database.type` 都按外部SQL处理 —— 设置 `database.type`/`host`/`port`（+ 每服务 `database.<app>.existingSecret`），类型原样透传给服务（`PERSISTENCE_MODE` 直通）。唯一硬前提是服务侧支持（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql），且未知类型必须显式设置 `database.port`（无默认端口）。PostgreSQL仍是唯一内置（集群内）后端；如需将新后端提升为内置，参照offline chart的描述符模式（`database.backends` + 单一通用工作负载模板）。
 
 ### 7.3 新增前端类型
 

@@ -74,12 +74,21 @@ you.
 
 ## Database selection
 
-`DB_TYPE` in `config.env` selects the database backend:
+`DB_TYPE` in `config.env` selects the database backend. One type flows
+through every layer (issue #36):
 
-| `DB_TYPE` | Bundled image | Used by |
+| `DB_TYPE` | Mode | Bundled image |
 |---|---|---|
-| `mysql` (default) | `mysql:8.4.3` | registry-center + orchestration-center |
-| `postgresql` | `postgres:15-alpine` | registry-center + orchestration-center |
+| `mysql` (default) | bundled (in-cluster) | `mysql:8.4.3` |
+| `postgresql` | bundled (in-cluster) | `postgres:15-alpine` |
+| any other lowercase value (e.g. `gauss`) | **external** — none | — requires `DB_HOST` + `DB_PORT` |
+
+Bundled types render from the chart's `database.backends` descriptor table
+(one generic workload/storage template pair); external types deploy no
+database workload at all and the type reaches the services verbatim
+(`PERSISTENCE_MODE`) — the services must support it (registry-center:
+file, sqlite, postgresql, gauss, mysql; orchestration-center currently:
+file, postgresql, mysql).
 
 When `mysql` is selected (the default) the installer deploys a single
 `openan-mysql` StatefulSet (hostPath fallback `/data/openan-mysql`), creates

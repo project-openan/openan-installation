@@ -20,7 +20,7 @@ English: [Deployment contract](TRANSPORT_DEPLOYMENT.md).
 
 ## 配置职责
 
-- database.type选择postgresql/mysql；postgresql.enabled只决定是否创建内置PostgreSQL。MySQL使用已有外部实例，不创建数据库容器。
+- database.type：`postgresql`是唯一内置后端；其余任何类型（mysql、gauss、oracle…）均为外部SQL，类型原样透传给服务（PERSISTENCE_MODE）。postgresql.enabled只决定是否创建内置PostgreSQL。服务侧必须支持该类型（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql）。
 - database.registry / database.orchestration分别配置库名、用户和密码Secret。两个服务不要共用业务库。
 - 内置PostgreSQL当前用postgresql.existingSecret的postgres-password同时初始化业务用户；独立业务密码Secret仅用于外部数据库，不能配置成与初始化密码不同。生产推荐外部数据库和独立用户凭据。
 - registry.tls / orchestration.tls分别控制各自侦听协议及客户端证书校验。
@@ -29,7 +29,7 @@ English: [Deployment contract](TRANSPORT_DEPLOYMENT.md).
 - 模型定义通过完整models.yaml ConfigMap注入，秘密通过runtimeSecret或各能力existingSecret注入。自定义provider/auth字段请使用modelsConfigMap，内置llm快捷配置仅用于OpenAI-compatible。
 - frontend.type选择统一网页入口：portal（默认）或workflow-designer；workflow-designer回退时通过frontend.backendTls校验OC后端。
 
-`database.port` 仅作用于外部SQL，null/省略时按类型选择PostgreSQL 5432或MySQL 3306；内置PostgreSQL使用 `postgresql.port`。端口须为1..65535整数，两服务启用时拒绝同外部库名。`namespace` 必须与Helm `--namespace` 一致；应用镜像tag必填，不再默认旧v1.0.0。
+`database.port` 仅作用于外部SQL，null/省略时按类型选择PostgreSQL 5432或MySQL 3306；其余外部类型必须显式指定1..65535整数端口（无默认端口）。内置PostgreSQL使用 `postgresql.port`。端口须为1..65535整数，两服务启用时拒绝同外部库名。`namespace` 必须与Helm `--namespace` 一致；应用镜像tag必填，不再默认旧v1.0.0。
 
 默认模板不携带可用密码、机器Token或厂商密钥。缺失必要Secret、HTTP+客户端证书校验等错误组合会明确拒绝渲染/启动。
 

@@ -392,6 +392,75 @@ def test_installer_deploys_with_helm_upgrade_install():
     assert "RELEASE_ACTION" in text
 
 
+def test_external_database_type_renders_passthrough():
+    # issue #36: a type without a database.backends entry is an EXTERNAL
+    # database: no workload or storage renders, and the type reaches the
+    # services verbatim (PERSISTENCE_MODE passthrough).
+    docs = render({"database.type": "gauss", "database.host": "gauss.internal",
+                   "database.port": 5432, "database.existingSecret": "db-cred"})
+    assert "StatefulSet/openan-postgres" not in docs
+    assert "StatefulSet/openan-mysql" not in docs
+    for doc in ("ConfigMap/openan-postgres-init", "ConfigMap/openan-mysql-init"):
+        assert doc not in docs
+    for component in ("registry", "orchestration"):
+        config = docs[f"ConfigMap/{component}-center-config"]["data"]
+        assert config["PERSISTENCE_MODE"] == "gauss"
+        assert config["DB_HOST"] == "gauss.internal"
+        assert config["DB_PORT"] == "5432"
+    # The application DB_PASSWORD reads the generic external credential key
+    env = {e["name"]: e for e in
+           docs["Deployment/orchestration-center"]["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["DB_PASSWORD"]["valueFrom"]["secretKeyRef"] == {"name": "db-cred", "key": "password"}
+
+
+def test_unknown_type_without_host_fails_listing_bundled():
+    # A typo must die at render time with the bundled names, not pass
+    # through as a bogus PERSISTENCE_MODE and crash-loop at runtime.
+    error = render({"database.type": "postgers"}, success=False)
+    assert "is not a bundled backend" in error
+    assert "mysql, postgresql" in error
+
+
+def test_external_type_requires_port_and_secret():
+    error = render({"database.type": "gauss", "database.host": "gauss.internal",
+                    "database.existingSecret": "db-cred"}, success=False)
+    assert "set database.port" in error
+    error = render({"database.type": "gauss", "database.host": "gauss.internal",
+                    "database.port": 5432}, success=False)
+    assert "database.existingSecret" in error
+
+
+def test_bundled_mysql_renders_from_descriptor():
+    # The generic database/statefulset.yaml renders the mysql descriptor:
+    # same workload names, env, probes and init script as the historical
+    # per-type templates (selector-compatible across upgrades).
+    docs = render({"database.type": "mysql", "database.existingSecret": "db-cred"})
+    container = docs["StatefulSet/openan-mysql"]["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == "mysql:8.4.3"
+    assert "--character-set-server" in container["args"]
+    env = {e["name"]: e for e in container["env"]}
+    assert env["MYSQL_ROOT_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "db-cred", "key": "mysql-root-password"}
+    assert "mysqladmin ping" in " ".join(container["readinessProbe"]["exec"]["command"])
+    init = docs["ConfigMap/openan-mysql-init"]["data"]["create-databases.sh"]
+    assert "CREATE DATABASE IF NOT EXISTS registry_center" in init
+
+
+def test_installer_emits_unified_database_block():
+    # issue #36: the per-type postgresql:/mysql: values duplication is gone.
+    # The installer emits ONE database block; the bundled backend image
+    # override lives under database.backends.<type>, storage under
+    # database.storage, external types carry host/port/passwordKey.
+    text = (ROOT / "containerized/offline-install/scripts/install.sh").read_text(encoding="utf-8")
+    assert 'echo "  backends:"' in text
+    assert 'echo "    ${DB_TYPE}:"' in text
+    assert 'echo "  host: \\"${DB_HOST}\\"' in text
+    assert 'echo "  passwordKey: password"' in text
+    assert '"password=${DB_PASSWORD}"' in text  # external credential key
+    assert 'echo "postgresql:"' not in text
+    assert 'echo "mysql:"' not in text
+
+
 def test_oc_verify_client_follows_values():
     # The OC image defaults to ORCH_VERIFY_CLIENT=true; without the configmap
     # override, the OC always requires client certificates regardless of the

@@ -198,28 +198,50 @@ registry at the same host and skips both deploy and push.
 
 ### 3.4 Databases and storage
 
-- **MySQL 8.4.3 is the line default** (`DB_TYPE=mysql`,
-  `config.env.example:67`); PostgreSQL 15 remains selectable. The chart's
-  own default stays `postgresql`; the installer always emits
-  `database.type`.
-- Both are single-replica StatefulSets with utf8mb4 (mysql args) and an
-  init script creating `registry_center`/`registry` and
+One `database.type` flows through every layer (issue #36):
+
+- **Bundled backends** — `postgresql` and `mysql` are listed in the chart's
+  `database.backends` descriptor table (data, not code): image, port,
+  password env/key, probes, volumes and PV defaults. A single generic pair
+  of templates (`database/statefulset.yaml` + `database/storage.yaml`)
+  renders whichever entry `database.type` selects; only the init ConfigMap
+  (`database/init/<type>.yaml`) is per-backend, because the bootstrap SQL
+  dialect differs. Workload names, labels, env, probes and PV names are
+  identical to the historical per-type templates, so releases upgrade
+  selector-compatibly.
+- **External backends** — any other non-empty lowercase type (e.g. `gauss`)
+  deploys **no database workload or storage**: the type reaches the services
+  verbatim (`PERSISTENCE_MODE` passthrough) with the generic
+  `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME` env, and the credential is read from
+  `database.existingSecret` via `database.passwordKey`. The installer
+  requires `DB_HOST` + `DB_PORT` for external types (`config.env`); the
+  services must support the mode (registry-center: file, sqlite,
+  postgresql, gauss, mysql; orchestration-center currently: file,
+  postgresql, mysql).
+- **MySQL 8.4.3 is the line default** (`DB_TYPE=mysql`); PostgreSQL 15
+  remains selectable. The chart's own default stays `postgresql`; the
+  installer always emits `database.type` (+ the backend image override from
+  the in-cluster registry, + external host/port for external types).
+- Both bundled backends are single-replica StatefulSets with utf8mb4
+  (mysql args) and an init script creating `registry_center`/`registry` and
   `orchestration_center`/`opena2a_t`.
 - **Storage modes** (`STORAGE_MODE`): `auto` (default StorageClass when
   present, else hostPath fallback), `sc` (explicit `STORAGE_CLASS`),
   `hostpath`. The fallback creates the `openan-local` StorageClass
   (`no-provisioner`, WaitForFirstConsumer) plus a **node-pinned** PV
-  (`mysql/storage.yaml`, `postgres/storage.yaml`) so a multi-node cluster
-  never schedules the database away from its data.
-- MySQL mode swaps the default hostPath to `/data/openan-mysql`
-  (`install.sh:456-457`).
+  (`database/storage.yaml`, PV names from the backend descriptors) so a
+  multi-node cluster never schedules the database away from its data.
+- MySQL mode keeps its own default hostPath (`/data/openan-mysql`, from the
+  descriptor; the installer preserves the historical HOSTPATH swap).
 
 ### 3.5 Validation
 
-The chart validates via `_helpers.tpl` `fail()`s (database.type, database
-host, frontend.type) plus shell-side checks in check-env/install. There is
-no `validate.yaml` equivalent to the online chart — the installer is the
-gatekeeper.
+The chart validates through `_helpers.tpl` `fail()`s (external types without
+host/port, missing backend descriptor fields) plus a `database/validate.yaml`
+that takes the bundled whitelist from the `database.backends` keys — a typo
+like `postgers` dies at render time listing the valid bundled names, not as
+a runtime CrashLoop. check-env/install add the shell-side gates (external
+types require `DB_HOST`/`DB_PORT`; bundled types need their image tars).
 
 ---
 
@@ -281,7 +303,7 @@ Grouped summary (authoritative list: `config.env.example`):
 | Access control | `OC_ADMIN_PASSWORD` (required) |
 | Transport security | `HTTPS_ENABLED` (default true), `HTTPS_VERIFY_CLIENT`, `RC_TLS_SECRET`, `OC_TLS_SECRET`, `INGRESS_CLIENT_SECRET`, `REGISTRY_CLIENT_SECRET` (optional OC→RC), `PUBLIC_TLS_SECRET` |
 | Storage | `STORAGE_MODE`, `STORAGE_CLASS`, `STORAGE_SIZE`, `HOSTPATH`, `STORAGE_NODE` |
-| Database | `DB_TYPE`, `DB_PASSWORD` (required, 8+) |
+| Database | `DB_TYPE`, `DB_PASSWORD` (required, 8+); `DB_HOST`/`DB_PORT` for external types |
 | Images | `REGISTRY_CENTER_IMAGE`, `ORCHESTRATION_CENTER_IMAGE`, `WORKFLOW_DESIGNER_IMAGE`, `PORTAL_IMAGE`, `POSTGRES_IMAGE`, `MYSQL_IMAGE` (registry-relative) |
 | LLM | `REGISTRY_CHAT_{MODEL,URL,APIKEY}`, `ORCH_CHAT_{MODEL,URL,APIKEY}`, `LLM_VALIDATE` |
 | Misc | `REGISTRY_SIGNATURE_VALIDATION_ENABLED` (false — plain-HTTP topology, unsigned cards), `START_AGENTS_SERVER` |
@@ -334,7 +356,7 @@ The installer-generated values reference Secrets exclusively
 (`openan-db-credentials`, `openan-admin`, `openan-llm-keys`, the TLS set of
 §5.4) — no secret is ever inlined. The chart itself retains the direct-helm
 escape hatches for every credential
-(`postgresql/mysql.existingSecret`, `*.llm.*.existingSecret`,
+(`database.existingSecret` + `database.passwordKey`, `*.llm.*.existingSecret`,
 `orchestration.admin.existingSecret`, `registry.tls/signing.existingSecret`,
 `orchestration.tls.existingSecret`), plus `stringData` rendering from plain
 values for operators driving the chart without the installer. models.yaml

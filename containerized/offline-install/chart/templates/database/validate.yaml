@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{/* Fail fast on malformed combinations, with the bundled whitelist taken
+     from database.backends keys (data, not an enum in code):
+     - a bundled type must carry a complete descriptor;
+     - an external type requires database.host + database.port;
+     - a typo dies here with the valid bundled names, instead of
+       CrashLoopBackOff at runtime. */}}
+{{- $type := include "openan.dbType" . }}
+{{- $backend := index .Values.database.backends $type }}
+{{- if $backend }}
+{{- if not $backend.name }}{{ fail (printf "database.backends.%s.name is required" $type) }}{{ end }}
+{{- if not $backend.image }}{{ fail (printf "database.backends.%s.image is required" $type) }}{{ end }}
+{{- if not $backend.passwordEnv }}{{ fail (printf "database.backends.%s.passwordEnv is required" $type) }}{{ end }}
+{{- if not $backend.passwordKey }}{{ fail (printf "database.backends.%s.passwordKey is required" $type) }}{{ end }}
+{{- if not $backend.dataVolume }}{{ fail (printf "database.backends.%s.dataVolume is required" $type) }}{{ end }}
+{{- if not (hasKey $backend "readinessProbe") }}{{ fail (printf "database.backends.%s.readinessProbe is required" $type) }}{{ end }}
+{{- if not (hasKey $backend "livenessProbe") }}{{ fail (printf "database.backends.%s.livenessProbe is required" $type) }}{{ end }}
+{{- else }}
+{{- $bundled := keys .Values.database.backends | sortAlpha | join ", " }}
+{{- if not .Values.database.host }}{{ fail (printf "database.type '%s' is not a bundled backend (bundled: %s); set database.host for an external database" $type $bundled) }}{{ end }}
+{{- if not .Values.database.existingSecret }}{{ fail (printf "external database '%s' requires database.existingSecret (key: database.passwordKey)" $type) }}{{ end }}
+{{- end }}
+{{- if .Values.database.storage.createPV }}
+{{- if and (not .Values.database.storage.useHostPath) (not .Values.database.storage.nodeName) }}{{ fail "database.storage local PV requires nodeName" }}{{ end }}
+{{- end }}

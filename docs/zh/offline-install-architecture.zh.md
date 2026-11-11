@@ -141,14 +141,18 @@ flowchart LR
 
 ### 3.4 数据库与存储
 
-- **MySQL 8.4.3是本线默认**（`DB_TYPE=mysql`，`config.env.example:81`）；PostgreSQL 15仍可选择。chart自身默认保持 `postgresql`；安装器总是显式输出 `database.type`。
-- 两者均为单副本StatefulSet，使用utf8mb4（mysql参数）与init脚本创建 `registry_center`/`registry` 与 `orchestration_center`/`opena2a_t`。
-- **存储模式**（`STORAGE_MODE`）：`auto`（有默认StorageClass则用之，否则hostPath回退）、`sc`（显式 `STORAGE_CLASS`）、`hostpath`。回退路径创建**节点固定** PV（`mysql/storage.yaml`、`postgres/storage.yaml`），保证多节点集群不会把数据库调度到数据所在节点之外；chart另支持可选的 `openan-local` StorageClass（需显式 `createStorageClass=true`，安装器不启用）。
-- MySQL模式将默认hostPath换成 `/data/openan-mysql`（`install.sh:674-676`）。
+一个 `database.type` 贯穿所有层（issue #36）：
+
+- **内置后端** —— `postgresql` 与 `mysql` 列在chart的 `database.backends` 描述表里（数据而非代码）：镜像、端口、密码env/key、探针、卷与PV默认值均来自描述项。一对通用模板（`database/statefulset.yaml` + `database/storage.yaml`）按 `database.type` 渲染对应条目；仅初始化ConfigMap（`database/init/<type>.yaml`）按后端各一份，因为引导SQL方言不同。工作负载名、标签、env、探针与PV名与历史per-type模板完全一致，release升级时selector兼容。
+- **外部后端** —— 任何其他非空小写类型（如 `gauss`）**不渲染数据库工作负载与存储**：类型原样透传给服务（`PERSISTENCE_MODE` 直通），配通用 `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME` env；凭证经 `database.existingSecret` 按 `database.passwordKey` 读取。安装器对外部类型强制 `DB_HOST` + `DB_PORT`（`config.env`）；服务侧必须支持该mode（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql）。
+- **MySQL 8.4.3是本线默认**（`DB_TYPE=mysql`）；PostgreSQL 15仍可选择。chart自身默认保持 `postgresql`；安装器总是显式输出 `database.type`（+ 集群内镜像源的backend镜像覆盖，外部类型则输出 host/port）。
+- 内置后端均为单副本StatefulSet，使用utf8mb4（mysql参数）与init脚本创建 `registry_center`/`registry` 与 `orchestration_center`/`opena2a_t`。
+- **存储模式**（`STORAGE_MODE`）：`auto`（有默认StorageClass则用之，否则hostPath回退）、`sc`（显式 `STORAGE_CLASS`）、`hostpath`。回退路径创建 `openan-local` StorageClass与**节点固定** PV（`database/storage.yaml`，PV名来自backend描述项），保证多节点集群不会把数据库调度到数据所在节点之外。
+- MySQL模式保留自身默认hostPath（`/data/openan-mysql`，来自描述项；安装器保留历史的HOSTPATH切换逻辑）。
 
 ### 3.5 校验
 
-chart通过 `_helpers.tpl` 的 `fail()` 校验（database.type、数据库主机、frontend.type），check-env/install另有shell侧检查。在线chart那样的 `validate.yaml` 在本线不存在 —— 安装器即门禁。
+chart通过 `_helpers.tpl` 的 `fail()`（外部类型缺host/port、backend描述项缺字段）加上 `database/validate.yaml` 校验——内置白名单取自 `database.backends` 的键：`postgers` 这类拼写错误在渲染期即报错并列出有效的内置类型名，而不是运行期CrashLoop。check-env/install另有shell侧门禁（外部类型要求 `DB_HOST`/`DB_PORT`；内置类型检查镜像tar）。
 
 ---
 
@@ -202,7 +206,7 @@ flowchart TD
 | 访问控制 | `OC_ADMIN_PASSWORD`（必填） |
 | 传输安全 | `HTTPS_ENABLED`（默认 true）、`HTTPS_VERIFY_CLIENT`、`RC_TLS_SECRET`、`OC_TLS_SECRET`、`INGRESS_CLIENT_SECRET`、`REGISTRY_CLIENT_SECRET`（可选 OC→RC）、`PUBLIC_TLS_SECRET`（save_config 回写，不在 example 中） |
 | 存储 | `STORAGE_MODE`、`STORAGE_CLASS`、`STORAGE_SIZE`、`HOSTPATH`、`STORAGE_NODE` |
-| 数据库 | `DB_TYPE`、`DB_PASSWORD`（必填，8+ 字符） |
+| 数据库 | `DB_TYPE`、`DB_PASSWORD`（必填，8+ 字符）；外部类型另需 `DB_HOST`/`DB_PORT` |
 | 镜像 | `REGISTRY_CENTER_IMAGE`、`ORCHESTRATION_CENTER_IMAGE`、`WORKFLOW_DESIGNER_IMAGE`、`PORTAL_IMAGE`、`POSTGRES_IMAGE`、`MYSQL_IMAGE`（registry 相对引用） |
 | LLM | `REGISTRY_CHAT_{MODEL,URL,APIKEY}`、`ORCH_CHAT_{MODEL,URL,APIKEY}`、`LLM_VALIDATE` |
 | 其他 | `REGISTRY_SIGNATURE_VALIDATION_ENABLED`（false —— 明文 HTTP 拓扑下卡片不签名）、`START_AGENTS_SERVER` |
@@ -238,7 +242,7 @@ server.conf  ->  server.properties  ->  REGISTRY_* / ORCH_* 环境变量
 
 ### 5.3 Secret引用模型
 
-安装器生成的values只引用Secret（`openan-db-credentials`、`openan-admin`、`openan-llm-keys` 及 §5.4的TLS系列）—— 任何密钥都不内联。chart自身保留每个凭证的直接Helm逃生口（`postgresql/mysql.existingSecret`、`*.llm.*.existingSecret`、`orchestration.admin.existingSecret`、`registry.tls/signing.existingSecret`、`orchestration.tls.existingSecret`），并为不使用安装器的运维者提供从明文values渲染 `stringData` 的能力。models.yaml ConfigMap只引用环境变量名（`api_key_env`）—— 密钥永不内联。
+安装器生成的values只引用Secret（`openan-db-credentials`、`openan-admin`、`openan-llm-keys` 及 §5.4的TLS系列）—— 任何密钥都不内联。chart自身保留每个凭证的直接Helm逃生口（`database.existingSecret` + `database.passwordKey`、`*.llm.*.existingSecret`、`orchestration.admin.existingSecret`、`registry.tls/signing.existingSecret`、`orchestration.tls.existingSecret`），并为不使用安装器的运维者提供从明文values渲染 `stringData` 的能力。models.yaml ConfigMap只引用环境变量名（`api_key_env`）—— 密钥永不内联。
 
 ### 5.4 PKI
 

@@ -10,9 +10,13 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- $c := index $.Values $name }}
 {{- if and $c.enabled (not $c.image.tag) }}{{ fail (printf "%s.image.tag is required; use images built from the accepted service revisions" $name) }}{{ end }}
 {{- end }}
-{{- if not (has .Values.database.type (list "postgresql" "mysql")) }}{{ fail "database.type must be postgresql or mysql" }}{{ end }}
-{{- if and (eq .Values.database.type "mysql") .Values.postgresql.enabled }}{{ fail "mysql requires postgresql.enabled=false" }}{{ end }}
-{{- if and (eq .Values.database.type "mysql") (not .Values.database.host) }}{{ fail "mysql requires database.host" }}{{ end }}
+{{- if not .Values.database.type }}{{ fail "database.type is required" }}{{ end }}
+{{/* Only postgresql is bundled; every other type is an EXTERNAL database.
+      The type is passed to the services verbatim (PERSISTENCE_MODE), so any
+      backend the services support works without chart changes — but a typo
+      or a missing host must die here, not as a runtime CrashLoop. */}}
+{{- if and (ne .Values.database.type "postgresql") .Values.postgresql.enabled }}{{ fail (printf "database.type '%s' requires postgresql.enabled=false (only postgresql is bundled)" .Values.database.type) }}{{ end }}
+{{- if and (ne .Values.database.type "postgresql") (ne .Values.database.type "mysql") (not .Values.database.host) }}{{ fail (printf "database.type '%s' is external: set database.host" .Values.database.type) }}{{ end }}
 {{- if and (eq .Values.database.type "postgresql") (not .Values.postgresql.enabled) (not (or .Values.database.host .Values.postgresql.externalHost)) }}{{ fail "external PostgreSQL requires database.host or postgresql.externalHost" }}{{ end }}
 {{- if and .Values.postgresql.enabled (not (or .Values.postgresql.existingSecret .Values.postgresql.password)) }}{{ fail "PostgreSQL requires an explicit password or existingSecret" }}{{ end }}
 {{- range $name := list "registry" "orchestration" }}
@@ -30,7 +34,7 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- if $c.tls.enabled }}
 {{- if or (ne $c.tls.mode "secret") (not $c.tls.existingSecret) }}{{ fail (printf "%s HTTPS requires tls.mode=secret and tls.existingSecret; use the service certificate tool" $name) }}{{ end }}
 {{- else if $c.tls.verifyClient }}{{ fail (printf "%s verifyClient requires HTTPS" $name) }}{{ end }}
-{{- if eq $.Values.database.type "mysql" }}{{- if not (index $.Values.database $name).existingSecret }}{{ fail (printf "database.%s.existingSecret is required for MySQL" $name) }}{{ end }}{{ end }}
+{{- if ne $.Values.database.type "postgresql" }}{{- if not (index $.Values.database $name).existingSecret }}{{ fail (printf "database.%s.existingSecret is required for external SQL type '%s'" $name $.Values.database.type) }}{{ end }}{{ end }}
 {{- end }}
 {{- end }}
 {{- if .Values.registry.enabled }}

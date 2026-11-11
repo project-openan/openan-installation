@@ -72,6 +72,10 @@ STORAGE_SIZE="20Gi"
 HOSTPATH="/data/openan-postgres"
 STORAGE_NODE=""
 DB_TYPE="mysql"
+# External database (DB_TYPE not postgresql|mysql): host + port are required;
+# no in-cluster database workload or storage is deployed for them.
+DB_HOST=""
+DB_PORT=""
 # Required: no default password. 8+ characters (the database init script
 # seeds the application users with this value).
 DB_PASSWORD=""
@@ -119,10 +123,25 @@ done
 # https://<IP> public access directly (MetalLB VIP or node IP), with the
 # matching IP SAN in the generated public certificate.
 
+# DB_TYPE: a bundled backend (postgresql|mysql) deploys the in-cluster
+# database; any other non-empty lowercase value is an EXTERNAL database that
+# must carry DB_HOST and DB_PORT (the type reaches the services verbatim —
+# verify the services support it before selecting an external type).
+DB_BUNDLED="false"
 case "$DB_TYPE" in
-    postgresql|mysql) ;;
-    *) log_error "Invalid DB_TYPE: $DB_TYPE (use postgresql|mysql)"; exit 2 ;;
+    postgresql|mysql) DB_BUNDLED="true" ;;
+    "") log_error "DB_TYPE is empty (bundled: postgresql|mysql; external: any other type + DB_HOST/DB_PORT)"; exit 2 ;;
+    *[A-Z]*|*" "*)
+        log_error "DB_TYPE must be lowercase without spaces: ${DB_TYPE}"
+        exit 2 ;;
+    *) : ;;  # external type: validated below
 esac
+if [ "$DB_BUNDLED" = "false" ]; then
+    [ -n "$DB_HOST" ] || { log_error "external DB_TYPE '${DB_TYPE}' requires DB_HOST"; exit 2; }
+    [ -n "$DB_PORT" ] || { log_error "external DB_TYPE '${DB_TYPE}' requires DB_PORT (no default port is known)"; exit 2; }
+    printf '%s' "$DB_PORT" | grep -Eq '^[1-9][0-9]*$' || {
+        log_error "DB_PORT must be an integer port number"; exit 2; }
+fi
 
 ARCH="$(detect_arch || true)"
 [ -n "$ARCH" ] || { log_error "unsupported architecture: $(uname -m)"; exit 1; }
@@ -236,7 +255,8 @@ if [ "$SKIP_CHECK" != "true" ]; then
         HTTPS_ENABLED HTTPS_VERIFY_CLIENT \
         RC_TLS_SECRET OC_TLS_SECRET INGRESS_CLIENT_SECRET REGISTRY_CLIENT_SECRET \
         STORAGE_MODE STORAGE_CLASS STORAGE_SIZE HOSTPATH STORAGE_NODE \
-        DB_TYPE FRONTEND_TYPE OC_ADMIN_PASSWORD REGISTRY_CHAT_URL LLM_VALIDATE
+        DB_TYPE DB_HOST DB_PORT DB_BUNDLED \
+        FRONTEND_TYPE OC_ADMIN_PASSWORD REGISTRY_CHAT_URL LLM_VALIDATE
     check_args=()
     [ -n "$CONFIG_FILE" ] && check_args+=(--config "$CONFIG_FILE")
     if ! "$SCRIPT_DIR/check-env.sh" "${check_args[@]}"; then
@@ -284,7 +304,11 @@ echo "  Namespace:        $K8S_NAMESPACE"
 echo "  Registry:         $REG_HOST (node: $REGISTRY_NODE)"
 echo "  MetalLB:          $INSTALL_METALLB ${METALLB_POOL:+($METALLB_POOL)}"
 echo "  Storage mode:     $STORAGE_MODE (node: $STORAGE_NODE, size: $STORAGE_SIZE)"
-echo "  Database:         $DB_TYPE"
+if [ "$DB_BUNDLED" = "true" ]; then
+    echo "  Database:         $DB_TYPE (bundled in-cluster)"
+else
+    echo "  Database:         $DB_TYPE (external: ${DB_HOST}:${DB_PORT})"
+fi
 echo "  Frontend:         $FRONTEND_TYPE"
 echo "  Ingress host:     ${INGRESS_HOST:-<none, IP access>}"
 echo "  HTTPS (services): $HTTPS_ENABLED (verifyClient: $HTTPS_VERIFY_CLIENT)"
@@ -621,9 +645,12 @@ print(json.dumps(document))' "$K8S_NAMESPACE" "$name" | "$KUBECTL" create -f - >
 
 # Credentials as Kubernetes Secrets; the generated values file carries
 # references only (no secrets in config.values.yaml or Helm release data).
+# 'password' is the generic external-type key (chart database.passwordKey);
+# the per-backend keys serve the bundled backends.
 create_secret_from_pairs "openan-db-credentials" \
     "postgres-password=${DB_PASSWORD}" \
-    "mysql-root-password=${DB_PASSWORD}"
+    "mysql-root-password=${DB_PASSWORD}" \
+    "password=${DB_PASSWORD}"
 create_secret_from_pairs "openan-admin" \
     "admin-password=${OC_ADMIN_PASSWORD}"
 LLM_PAIRS=()
@@ -635,9 +662,10 @@ fi
 
 VALUES="$BUNDLE_DIR/config.values.yaml"
 
-# emit_db_storage <hostpath> — shared storage block for the database values
+# emit_db_storage — database.storage block for the bundled backend (the
+# hostPath default follows the backend: postgres keeps HOSTPATH, mysql swaps
+# the postgres default for the mysql one).
 emit_db_storage() {
-    local hostpath="$1"
     echo "  storage:"
     echo "    size: ${STORAGE_SIZE}"
     if [ "$STORAGE_MODE" = "sc" ] || { [ "$STORAGE_MODE" = "auto" ] && [ -n "$STORAGE_CLASS" ]; }; then
@@ -650,7 +678,11 @@ emit_db_storage() {
         echo "    storageClassName: openan-local"
         echo "    createPV: true"
         echo "    useHostPath: true"
-        echo "    hostPath: \"${hostpath}\""
+        local hp="${HOSTPATH}"
+        if [ "$DB_TYPE" = "mysql" ] && [ "$hp" = "/data/openan-postgres" ]; then
+            hp="/data/openan-mysql"
+        fi
+        echo "    hostPath: \"${hp}\""
         echo "    nodeName: ${STORAGE_NODE}"
     fi
 }
@@ -660,32 +692,29 @@ emit_db_storage() {
     echo "namespace: ${K8S_NAMESPACE}"
     echo "database:"
     echo "  type: ${DB_TYPE}"
+    echo "  existingSecret: openan-db-credentials"
+    if [ "$DB_BUNDLED" = "true" ]; then
+        # Bundled backend: storage follows STORAGE_MODE and the image is the
+        # in-cluster-registry reference; everything else (env, probes,
+        # volumes) comes from the chart's backend descriptor.
+        emit_db_storage
+        echo "  backends:"
+        echo "    ${DB_TYPE}:"
+        if [ "$DB_TYPE" = "mysql" ]; then
+            echo "      image: \"${REG_HOST}/${MYSQL_IMAGE}\""
+        else
+            echo "      image: \"${REG_HOST}/${POSTGRES_IMAGE}\""
+        fi
+    else
+        # External backend: no workload or storage; host/port explicit and
+        # the credential read from the generic 'password' key.
+        echo "  host: \"${DB_HOST}\""
+        echo "  port: ${DB_PORT}"
+        echo "  passwordKey: password"
+    fi
     echo "https:"
     echo "  enabled: ${HTTPS_ENABLED}"
     echo "  verifyClient: ${HTTPS_VERIFY_CLIENT}"
-    echo "postgresql:"
-    if [ "$DB_TYPE" = "mysql" ]; then
-        echo "  enabled: false"
-        echo "  existingSecret: openan-db-credentials"
-    else
-        echo "  enabled: true"
-        echo "  existingSecret: openan-db-credentials"
-        echo "  image: \"${REG_HOST}/${POSTGRES_IMAGE}\""
-        emit_db_storage "$HOSTPATH"
-    fi
-    echo "mysql:"
-    if [ "$DB_TYPE" = "mysql" ]; then
-        # HOSTPATH keeps its postgres default when unset — swap to the mysql default
-        MYSQL_HOSTPATH="${HOSTPATH}"
-        [ "$MYSQL_HOSTPATH" = "/data/openan-postgres" ] && MYSQL_HOSTPATH="/data/openan-mysql"
-        echo "  enabled: true"
-        echo "  existingSecret: openan-db-credentials"
-        echo "  image: \"${REG_HOST}/${MYSQL_IMAGE}\""
-        emit_db_storage "$MYSQL_HOSTPATH"
-    else
-        echo "  enabled: false"
-        echo "  existingSecret: openan-db-credentials"
-    fi
     echo "registry:"
     echo "  enabled: true"
     echo "  replicas: 2"
