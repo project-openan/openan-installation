@@ -176,7 +176,7 @@ detect_installation() {
     while IFS= read -r pv; do
         [ -n "$pv" ] && scan_pv "$pv"
     done < <(kubectl get pvc -n "$CONFIG_NAMESPACE" -o jsonpath='{range .items[*]}{.spec.volumeName}{"\n"}{end}' 2>/dev/null)
-    for pv in openan-postgres-pv openan-rc-pv openan-oc-pv; do
+    for pv in openan-postgres-pv openan-mysql-pv openan-rc-pv openan-oc-pv; do
         kubectl get pv "$pv" &>/dev/null && scan_pv "$pv"
     done
     

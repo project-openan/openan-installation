@@ -71,20 +71,22 @@ app: orchestration-center
 {{- end }}
 
 {{/*
-PostgreSQL labels
+Bundled-database labels (rendered for the active backend only). Label
+values are identical to the historical postgres labels, so selectors stay
+stable across upgrades.
 */}}
-{{- define "openan.postgres.labels" -}}
+{{- define "openan.db.labels" -}}
 {{ include "openan.labels" . }}
-app: openan-postgres
-app.kubernetes.io/name: openan-postgres
+app: openan-{{ include "openan.dbWorkloadName" . }}
+app.kubernetes.io/name: openan-{{ include "openan.dbWorkloadName" . }}
 app.kubernetes.io/component: database
 {{- end }}
 
 {{/*
-PostgreSQL selector labels
+Bundled-database selector labels
 */}}
-{{- define "openan.postgres.selectorLabels" -}}
-app: openan-postgres
+{{- define "openan.db.selectorLabels" -}}
+app: openan-{{ include "openan.dbWorkloadName" . }}
 {{- end }}
 
 {{/*
@@ -118,33 +120,64 @@ Registry Center URL
 {{- end }}
 
 {{/*
-PostgreSQL host
+Selected database type (verbatim passthrough): a type listed in
+database.backends selects the bundled descriptor when database.bundled;
+anything else is an external database.
 */}}
-{{- define "openan.postgresHost" -}}
-{{- if .Values.postgresql.enabled }}
-{{- "openan-postgres" }}
-{{- else }}
-{{- .Values.postgresql.externalHost }}
+{{- define "openan.dbType" -}}
+{{- .Values.database.type | default "postgresql" -}}
 {{- end }}
+
+{{/*
+Workload name of the active bundled backend (openan-<name>); fails for
+external databases because they deploy no database workload.
+*/}}
+{{- define "openan.dbWorkloadName" -}}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if $backend -}}
+{{- $backend.name -}}
+{{- else -}}
+{{- fail (printf "database.type '%s' has no bundled backend descriptor (external databases deploy no workload)" (include "openan.dbType" .)) -}}
+{{- end -}}
 {{- end }}
+
+{{/*
+Database host: the bundled backend Service, or the external database.host.
+Fail messages mirror validate.yaml exactly (render order is not guaranteed:
+registry-center templates run before validate.yaml alphabetically).
+*/}}
 {{- define "openan.databaseHost" -}}
-{{- if and (ne .Values.database.type "postgresql") .Values.postgresql.enabled -}}{{ fail (printf "database.type '%s' requires postgresql.enabled=false (only postgresql is bundled)" .Values.database.type) }}{{- end -}}
-{{- if and (eq .Values.database.type "postgresql") .Values.postgresql.enabled -}}openan-postgres
-{{- else -}}{{ required (printf "database.type '%s' is external: set database.host" .Values.database.type) (default .Values.postgresql.externalHost .Values.database.host) }}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if .Values.database.bundled -}}
+{{- if $backend -}}
+{{- printf "openan-%s" $backend.name -}}
+{{- else -}}
+{{- $bundledList := keys .Values.database.backends | sortAlpha | join ", " -}}
+{{- fail (printf "database.bundled requires a database.backends entry for type '%s' (bundled: %s)" (include "openan.dbType" .) $bundledList) -}}
+{{- end -}}
+{{- else -}}
+{{- required (printf "database.type '%s' is external: set database.host" (include "openan.dbType" .)) .Values.database.host -}}
 {{- end -}}
 {{- end -}}
 {{- define "openan.databasePort" -}}
-{{- if and (eq .Values.database.type "postgresql") .Values.postgresql.enabled -}}
-{{- .Values.postgresql.port -}}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if ne .Values.database.port nil -}}
+{{- .Values.database.port -}}
+{{- else if $backend -}}
+{{- $backend.port -}}
 {{- else -}}
-{{- if eq .Values.database.port nil -}}
-{{- if eq .Values.database.type "postgresql" -}}5432
-{{- else if eq .Values.database.type "mysql" -}}3306
-{{- else -}}{{ fail (printf "database.type '%s' is external: set database.port (no default port is known for it)" .Values.database.type) }}
-{{- end -}}
-{{- else -}}{{- .Values.database.port -}}{{- end -}}
+{{- fail (printf "database.type '%s' is external without a known default port; set database.port" (include "openan.dbType" .)) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Credential key of the active bundled backend (postgres-password /
+mysql-root-password); external SQL reads the per-service passwordKey instead.
+*/}}
+{{- define "openan.dbPasswordKey" -}}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if $backend -}}{{- $backend.passwordKey -}}{{- else -}}db-password{{- end -}}
+{{- end }}
 {{/* Probe DNS names must resolve inside the probed Pod, not through a Service
 whose endpoints are withheld until readiness succeeds. IP literals need no alias. */}}
 {{- define "openan.probeHostAliases" -}}

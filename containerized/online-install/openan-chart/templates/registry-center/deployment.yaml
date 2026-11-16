@@ -77,9 +77,9 @@ spec:
               {{- if (index .Values.database "registry").existingSecret }}
               name: {{ (index .Values.database "registry").existingSecret }}
               key: {{ (index .Values.database "registry").passwordKey }}
-              {{- else if .Values.postgresql.existingSecret }}
-              name: {{ .Values.postgresql.existingSecret }}
-              key: postgres-password
+              {{- else if .Values.database.existingSecret }}
+              name: {{ .Values.database.existingSecret }}
+              key: {{ include "openan.dbPasswordKey" . }}
               {{- else }}
               name: registry-center-secret
               key: db-password

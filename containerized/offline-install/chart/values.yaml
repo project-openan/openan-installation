@@ -61,7 +61,8 @@ database:
   backends:
     postgresql:
       name: postgres                  # workload suffix: openan-postgres
-      image: "postgres:15-alpine"     # offline installer rewrites to <REG_HOST>/...
+      image: "postgres:15-alpine"     # public reference (pure-Helm users)
+      bundleImage: "library/postgres:15-alpine"  # registry-relative ref the installer pushes/pins
       port: 5432
       passwordEnv: POSTGRES_PASSWORD
       passwordKey: postgres-password
@@ -94,6 +95,7 @@ database:
     mysql:
       name: mysql
       image: "mysql:8.4.3"
+      bundleImage: "library/mysql:8.4.3"
       port: 3306
       passwordEnv: MYSQL_ROOT_PASSWORD
       passwordKey: mysql-root-password

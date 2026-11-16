@@ -123,19 +123,60 @@ done
 # https://<IP> public access directly (MetalLB VIP or node IP), with the
 # matching IP SAN in the generated public certificate.
 
-# DB_TYPE: a bundled backend (postgresql|mysql) deploys the in-cluster
-# database; any other non-empty lowercase value is an EXTERNAL database that
-# must carry DB_HOST and DB_PORT (the type reaches the services verbatim —
-# verify the services support it before selecting an external type).
+# --- Bundled database backends: data in the bundled chart --------------------
+# The interactive menu, the bundled/external classification and the values
+# image emission all follow database.backends in chart/values.yaml — adding
+# a bundled backend to the chart never touches this installer.
+db_backends_yaml_section() {
+    awk '
+        /^database:[[:space:]]*$/ {indb=1; inb=0; next}
+        /^[^[:space:]]/ {indb=0; inb=0}
+        indb && /^  backends:[[:space:]]*$/ {inb=1; next}
+        indb && /^  [^[:space:]]/ {inb=0}
+        inb
+    ' "$BUNDLE_DIR/chart/values.yaml"
+}
+
+bundled_db_types() {
+    db_backends_yaml_section | awk '/^    [a-zA-Z0-9_-]+:[[:space:]]*$/ {k=$1; sub(/:$/,"",k); print k}'
+}
+
+bundled_db_field() { # <type> <field> -> field value (empty when unset)
+    local type="$1" field="$2"
+    db_backends_yaml_section | awk -v want="$type" -v field="$field" '
+        /^    [a-zA-Z0-9_-]+:[[:space:]]*$/ {cur=$1; sub(/:$/,"",cur); next}
+        cur == want {
+            line=$0; sub(/^ +/, "", line)
+            if (index(line, field ":") == 1) {
+                sub("^" field ":[[:space:]]*", "", line)
+                gsub(/"/, "", line)
+                print line
+                exit
+            }
+        }'
+}
+
+DB_AVAILABLE="$(bundled_db_types)"
+[ -n "$DB_AVAILABLE" ] || {
+    log_error "cannot read database.backends from $BUNDLE_DIR/chart/values.yaml — the bundle is broken"
+    exit 2
+}
+
+# DB_TYPE: a type listed in the chart's database.backends deploys the
+# in-cluster database; any other non-empty lowercase value is an EXTERNAL
+# database that must carry DB_HOST and DB_PORT (the type reaches the services
+# verbatim — verify the services support it before selecting an external type).
 DB_BUNDLED="false"
 case "$DB_TYPE" in
-    postgresql|mysql) DB_BUNDLED="true" ;;
-    "") log_error "DB_TYPE is empty (bundled: postgresql|mysql; external: any other type + DB_HOST/DB_PORT)"; exit 2 ;;
+    "") log_error "DB_TYPE is empty (bundled: $(printf '%s ' $DB_AVAILABLE); external: any other type + DB_HOST/DB_PORT)"; exit 2 ;;
     *[A-Z]*|*" "*)
         log_error "DB_TYPE must be lowercase without spaces: ${DB_TYPE}"
         exit 2 ;;
-    *) : ;;  # external type: validated below
+    *) : ;;
 esac
+for dbt in $DB_AVAILABLE; do
+    [ "$dbt" = "$DB_TYPE" ] && DB_BUNDLED="true"
+done
 if [ "$DB_BUNDLED" = "false" ]; then
     [ -n "$DB_HOST" ] || { log_error "external DB_TYPE '${DB_TYPE}' requires DB_HOST"; exit 2; }
     [ -n "$DB_PORT" ] || { log_error "external DB_TYPE '${DB_TYPE}' requires DB_PORT (no default port is known)"; exit 2; }
@@ -199,7 +240,14 @@ if [ "$ASSUME_YES" != "true" ] && [ -z "$CONFIG_FILE" ]; then
     else
         HTTPS_ENABLED="false"
     fi
-    DB_TYPE="$(ask_choice "  Database backend:" "mysql" "postgresql")"
+    # Menu follows the chart's database.backends data; the current default
+    # stays first (ask_choice falls back to the first option on invalid
+    # input), so adding a chart backend extends the menu automatically.
+    DB_MENU="$DB_TYPE"
+    for dbt in $DB_AVAILABLE; do
+        [ "$dbt" = "$DB_TYPE" ] || DB_MENU="$DB_MENU $dbt"
+    done
+    DB_TYPE="$(ask_choice "  Database backend:" $DB_MENU)"
     DB_PASSWORD="$(ask_input_secret "  Database password (8+ characters)" "")"
     REGISTRY_CHAT_MODEL="$(ask_input "  Registry Center chat model" "$REGISTRY_CHAT_MODEL")"
     REGISTRY_CHAT_URL="$(ask_input "  Registry Center chat URL" "$REGISTRY_CHAT_URL")"
@@ -696,15 +744,22 @@ emit_db_storage() {
     if [ "$DB_BUNDLED" = "true" ]; then
         # Bundled backend: storage follows STORAGE_MODE and the image is the
         # in-cluster-registry reference; everything else (env, probes,
-        # volumes) comes from the chart's backend descriptor.
+        # volumes) comes from the chart's backend descriptor. The image
+        # override is generic: bundleImage from the descriptor, with the
+        # legacy POSTGRES_IMAGE/MYSQL_IMAGE config.env knobs kept working.
         emit_db_storage
+        DB_BUNDLE_IMAGE="$(bundled_db_field "$DB_TYPE" bundleImage)"
+        DB_IMAGE_OVERRIDE=""
+        [ "$DB_TYPE" = "postgresql" ] && DB_IMAGE_OVERRIDE="$POSTGRES_IMAGE"
+        [ "$DB_TYPE" = "mysql" ] && DB_IMAGE_OVERRIDE="$MYSQL_IMAGE"
+        [ -n "$DB_IMAGE_OVERRIDE" ] || DB_IMAGE_OVERRIDE="$DB_BUNDLE_IMAGE"
+        [ -n "$DB_IMAGE_OVERRIDE" ] || {
+            log_error "no bundleImage descriptor for bundled type '${DB_TYPE}' — the bundle is broken"
+            exit 2
+        }
         echo "  backends:"
         echo "    ${DB_TYPE}:"
-        if [ "$DB_TYPE" = "mysql" ]; then
-            echo "      image: \"${REG_HOST}/${MYSQL_IMAGE}\""
-        else
-            echo "      image: \"${REG_HOST}/${POSTGRES_IMAGE}\""
-        fi
+        echo "      image: \"${REG_HOST}/${DB_IMAGE_OVERRIDE}\""
     else
         # External backend: no workload or storage; host/port explicit and
         # the credential read from the generic 'password' key.

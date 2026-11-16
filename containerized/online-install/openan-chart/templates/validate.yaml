@@ -5,20 +5,27 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- $port := include "openan.databasePort" . }}
 {{- if or (not (regexMatch "^[0-9]+$" $port)) (lt (int $port) 1) (gt (int $port) 65535) }}{{ fail "SQL port must be an integer in 1..65535" }}{{ end }}
 {{- if ne .Values.namespace .Release.Namespace }}{{ fail "namespace must match Helm --namespace" }}{{ end }}
-{{- if and .Values.registry.enabled .Values.orchestration.enabled (not .Values.postgresql.enabled) (eq .Values.database.registry.name .Values.database.orchestration.name) }}{{ fail "registry and orchestration require separate external database names" }}{{ end }}
+{{- if and .Values.registry.enabled .Values.orchestration.enabled (not .Values.database.bundled) (eq .Values.database.registry.name .Values.database.orchestration.name) }}{{ fail "registry and orchestration require separate external database names" }}{{ end }}
 {{- range $name := list "registry" "orchestration" "frontend" }}
 {{- $c := index $.Values $name }}
 {{- if and $c.enabled (not $c.image.tag) }}{{ fail (printf "%s.image.tag is required; use images built from the accepted service revisions" $name) }}{{ end }}
 {{- end }}
 {{- if not .Values.database.type }}{{ fail "database.type is required" }}{{ end }}
-{{/* Only postgresql is bundled; every other type is an EXTERNAL database.
-      The type is passed to the services verbatim (PERSISTENCE_MODE), so any
-      backend the services support works without chart changes — but a typo
-      or a missing host must die here, not as a runtime CrashLoop. */}}
-{{- if and (ne .Values.database.type "postgresql") .Values.postgresql.enabled }}{{ fail (printf "database.type '%s' requires postgresql.enabled=false (only postgresql is bundled)" .Values.database.type) }}{{ end }}
-{{- if and (ne .Values.database.type "postgresql") (ne .Values.database.type "mysql") (not .Values.database.host) }}{{ fail (printf "database.type '%s' is external: set database.host" .Values.database.type) }}{{ end }}
-{{- if and (eq .Values.database.type "postgresql") (not .Values.postgresql.enabled) (not (or .Values.database.host .Values.postgresql.externalHost)) }}{{ fail "external PostgreSQL requires database.host or postgresql.externalHost" }}{{ end }}
-{{- if and .Values.postgresql.enabled (not (or .Values.postgresql.existingSecret .Values.postgresql.password)) }}{{ fail "PostgreSQL requires an explicit password or existingSecret" }}{{ end }}
+{{/* One open contract: a type listed in database.backends is BUNDLED when
+      database.bundled=true (the descriptor renders the in-cluster StatefulSet);
+      bundled=false is EXTERNAL SQL whose type passes to the services verbatim
+      (PERSISTENCE_MODE) — any backend the services support works without
+      chart changes, but a missing host or credential must die here, not as a
+      runtime CrashLoop. */}}
+{{- $dbType := .Values.database.type | default "postgresql" }}
+{{- $dbBackend := index .Values.database.backends $dbType }}
+{{- if .Values.database.bundled }}
+{{- if not $dbBackend }}{{ fail (printf "database.bundled requires a database.backends entry for type '%s' (bundled: %s)" $dbType (keys .Values.database.backends | sortAlpha | join ", ")) }}{{ end }}
+{{- if not (or .Values.database.existingSecret .Values.database.password) }}{{ fail "bundled database requires database.existingSecret (or an explicit database.password for pure-Helm evaluation)" }}{{ end }}
+{{- else }}
+{{- if not .Values.database.host }}{{ fail "external SQL requires database.host" }}{{ end }}
+{{- if and (not .Values.database.port) (not $dbBackend) }}{{ fail (printf "database.type '%s' has no known default port; set database.port" $dbType) }}{{ end }}
+{{- end }}
 {{- range $name := list "registry" "orchestration" }}
 {{- $c := index $.Values $name }}
 {{- if $c.enabled }}
@@ -34,7 +41,7 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- if $c.tls.enabled }}
 {{- if or (ne $c.tls.mode "secret") (not $c.tls.existingSecret) }}{{ fail (printf "%s HTTPS requires tls.mode=secret and tls.existingSecret; use the service certificate tool" $name) }}{{ end }}
 {{- else if $c.tls.verifyClient }}{{ fail (printf "%s verifyClient requires HTTPS" $name) }}{{ end }}
-{{- if ne $.Values.database.type "postgresql" }}{{- if not (index $.Values.database $name).existingSecret }}{{ fail (printf "database.%s.existingSecret is required for external SQL type '%s'" $name $.Values.database.type) }}{{ end }}{{ end }}
+{{- if not $.Values.database.bundled }}{{- if not (or (index $.Values.database $name).existingSecret $.Values.database.existingSecret) }}{{ fail (printf "external SQL requires database.%s.existingSecret (or database.existingSecret) for type '%s'" $name $.Values.database.type) }}{{ end }}{{ end }}
 {{- end }}
 {{- end }}
 {{- if .Values.registry.enabled }}
@@ -59,7 +66,7 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- if and (not $c.persistence.useHostPath) (not $c.persistence.nodeName) }}{{ fail (printf "%s.persistence local PV requires nodeName" $name) }}{{ end }}
 {{- end }}
 {{- end }}
-{{- if and .Values.postgresql.enabled .Values.postgresql.storage.createPV (not .Values.postgresql.storage.useHostPath) (not .Values.postgresql.storage.nodeName) }}{{ fail "postgresql.storage local PV requires nodeName" }}{{ end }}
+{{- if and .Values.database.bundled (index .Values.database.backends (.Values.database.type | default "postgresql")) .Values.database.storage.createPV (not .Values.database.storage.useHostPath) (not .Values.database.storage.nodeName) }}{{ fail "database.storage local PV requires nodeName" }}{{ end }}
 {{- if and .Values.frontend.enabled (not (has (default "portal" .Values.frontend.type) (list "portal" "workflow-designer"))) }}{{ fail "frontend.type must be portal or workflow-designer" }}{{ end }}
 {{- if and .Values.frontend.enabled (not .Values.orchestration.enabled) }}{{ fail "frontend requires orchestration.enabled=true" }}{{ end }}
 {{- /* Limitation: the portal image cannot verify upstream TLS. With
@@ -75,12 +82,12 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- if not (has (include "openan.publicScheme" .) (list "http" "https")) }}{{ fail "orchestration.publicScheme must be http or https" }}{{ end }}
 {{- range $name := list "registry" "orchestration" }}
 {{- $c := index $.Values $name }}
-{{- if and $c.enabled $.Values.postgresql.enabled }}
+{{- if and $c.enabled $.Values.database.bundled }}
 {{- $db := index $.Values.database $name }}
-{{- if $db.existingSecret }}{{ fail (printf "in-cluster PostgreSQL initializes one shared password; database.%s.existingSecret is for external SQL only, use postgresql.existingSecret" $name) }}{{ end }}
+{{- if $db.existingSecret }}{{ fail (printf "the bundled database initializes one shared credential; database.%s.existingSecret is for external SQL only, use database.existingSecret" $name) }}{{ end }}
 {{- $found := false }}
-{{- range $.Values.postgresql.databases }}{{- if and (eq .name $db.name) (eq .user $db.username) }}{{- $found = true }}{{- end }}{{- end }}
-{{- if not $found }}{{ fail (printf "database.%s must match a postgresql.databases name/user for in-cluster initialization" $name) }}{{ end }}
+{{- range $.Values.database.databases }}{{- if and (eq .name $db.name) (eq .user $db.username) }}{{- $found = true }}{{- end }}{{- end }}
+{{- if not $found }}{{ fail (printf "database.%s must match a database.databases name/user for in-cluster initialization" $name) }}{{ end }}
 {{- end }}
 {{- end }}
 {{- range $component := list "registry" "orchestration" }}

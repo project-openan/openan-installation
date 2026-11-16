@@ -1,0 +1,30 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{/* Per-backend init script (the only backend-specific template: the SQL
+     dialect of the bootstrap). Adding a bundled backend adds one file here
+     named after its database.backends key. */}}
+{{- $type := include "openan.dbType" . }}
+{{- $backend := index .Values.database.backends $type }}
+{{- if and (eq $type "postgresql") $backend .Values.database.bundled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openan-{{ $backend.name }}-init
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openan.db.labels" . | nindent 4 }}
+data:
+  create-databases.sh: |
+    #!/bin/bash
+    set -e
+    {{ range .Values.database.databases }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" \
+      -v password="$POSTGRES_PASSWORD" -v dbuser="{{ .user }}" -v dbname="{{ .name }}" <<'EOSQL'
+    CREATE USER :"dbuser" WITH PASSWORD :'password';
+    CREATE DATABASE :"dbname" OWNER :"dbuser";
+    GRANT ALL PRIVILEGES ON DATABASE :"dbname" TO :"dbuser";
+    EOSQL
+    {{ end }}
+{{- end }}

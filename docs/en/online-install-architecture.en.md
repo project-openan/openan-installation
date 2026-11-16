@@ -73,8 +73,8 @@ graph TB
             end
 
             subgraph "Database"
-                PG[(openan-postgres<br/>StatefulSet)]
-                EXT_DB[External MySQL/PostgreSQL]
+                PG[(openan-postgres / openan-mysql<br/>StatefulSet, descriptor-driven)]
+                EXT_DB[External SQL<br/>any service-supported type]
             end
 
             subgraph "Secrets & Config"
@@ -105,10 +105,10 @@ graph TB
 | Orchestration Center | Deployment | `orchestration-center` | 1 replica (process-local sessions); Recreate strategy |
 | Frontend (portal) | Deployment | `openan-frontend` | 2 replicas default; HPA enabled |
 | Frontend (designer) | Deployment | `openan-frontend` | 2 replicas default; HPA enabled; chart-managed nginx |
-| PostgreSQL | StatefulSet | `openan-postgres` | Only when `postgresql.enabled=true` |
+| Bundled database (postgresql/mysql) | StatefulSet | `openan-postgres` / `openan-mysql` | When `database.bundled=true` and the type has a `database.backends` descriptor |
 | RC runtime PVC | PVC | `registry-center-runtime` | `helm.sh/resource-policy: keep` |
 | OC runtime PVC | PVC | `orchestration-center-runtime` | `helm.sh/resource-policy: keep` |
-| Local PVs (fallback) | PV | `openan-postgres-pv`, `openan-rc-pv`, `openan-oc-pv` | Only when `createPV` is set; node-pinned hostPath/local, single-node evaluation |
+| Local PVs (fallback) | PV | `openan-postgres-pv`/`openan-mysql-pv`, `openan-rc-pv`, `openan-oc-pv` | Only when `createPV` is set; node-pinned hostPath/local, single-node evaluation |
 | Frontend Ingress | Ingress | `openan-frontend-ingress` | path `/` |
 | Orchestration Ingress | Ingress | `openan-orchestration-ingress` | path `/api/orchestrate(/|$)(.*)` → rewrite |
 | Registry Ingress | Ingress | `openan-registry-ingress` | paths `/registry`, `/api/registry` → rewrite |
@@ -202,18 +202,29 @@ port and the env contract — everything else is the image's responsibility.
 The `openan.frontendImageRepository` helper derives the image from the type
 when `repository` is empty, keeping values minimal.
 
-### 3.4 PostgreSQL (StatefulSet)
+### 3.4 Bundled database (StatefulSet, descriptor-driven)
 
-Only rendered when `postgresql.enabled=true` and `database.type=postgresql`.
+Rendered by the **generic** `database/statefulset.yaml` + `database/storage.yaml`
+templates whenever `database.bundled=true` and `database.type` has a
+`database.backends` descriptor (postgresql, mysql — the type space is open:
+adding a bundled backend = one descriptor entry + one init file, no template
+changes). Descriptor data (image, port, password env/key, probes with a
+`{port}` placeholder, volumes, PV defaults) drives the render; workload names,
+labels and PV names are identical to the historical per-type templates, so
+releases upgrade selector-compatibly.
 
-- Creates two databases/users via init script (`postgresql.databases` list).
-- Both apps share the `postgres-password` (in-cluster mode); per-app
-  `existingSecret` is rejected for in-cluster PG (validate.yaml:70).
+- Init ConfigMaps (`database/init/<type>.yaml`) create the databases/users
+  from the shared `database.databases` list (the per-app name/user must match
+  an entry; validate rejects mismatches).
+- Both apps read the shared `database.existingSecret` with the backend's
+  `passwordKey` (postgres-password / mysql-root-password); per-app
+  `existingSecret` is rejected when bundled and is the external SQL contract.
 - Storage: default StorageClass, or explicit `storageClassName`, or `-`
-  (no class). Without any StorageClass, `postgresql.storage.createStorageClass`
+  (no class). Without any StorageClass, `database.storage.createStorageClass`
   + `createPV`/`useHostPath`/`nodeName` create the shared `openan-local`
   class and a node-pinned PV (single-node evaluation; the wizard enables
-  this automatically).
+  this automatically — and `createStorageClass` also serves RC/OC runtime
+  PVs when the database is external).
 
 ### 3.5 Runtime PVCs (`runtime-pvc.yaml`)
 
@@ -361,8 +372,8 @@ handles the source-to-image pipeline and publishes to ghcr.io.
 ```yaml
 namespace: string            # Must match helm --namespace (validated)
 createNamespace: boolean
-postgresql: {...}           # In-cluster PG (optional)
-database: {...}             # SQL type/host/port + per-app db/user/secret
+database: {...}             # bundled flag + type + host/port + per-app db/user/secret
+                             # + storage + shared databases list + backends descriptors
 registry: {...}             # RC: image, port, replicas, llm, tls, signing, persistence
 orchestration: {...}        # OC: image, port, replicas, llm, tls, persistence
 frontend: {...}             # type, image, port, nodePort, nginxConfig, backendTls
@@ -376,7 +387,7 @@ an existing Kubernetes Secret:
 
 | Secret | Key(s) | Referenced by |
 |--------|--------|---------------|
-| `postgresql.existingSecret` | `postgres-password` | RC/OC DB_PASSWORD (in-cluster PG) |
+| `database.existingSecret` | backend `passwordKey` (postgres-password / mysql-root-password) | Bundled bootstrap + RC/OC DB_PASSWORD |
 | `database.<app>.existingSecret` | `db-password` (or `passwordKey`) | Per-app DB_PASSWORD (external SQL) |
 | `registry.runtimeSecret` | env vars (envFrom wholesale) | RC pod |
 | `registry.credentialSecret` | `integration_credentials.conf` | RC pod (mounted file) |
@@ -401,7 +412,13 @@ The `validate.yaml` template is a **fail-fast contract enforcer** that runs
 at `helm template/lint/install` time. It rejects:
 
 - Missing image tags (no default tag — forces explicit pinning)
-- MySQL with `postgresql.enabled=true` (contradictory)
+- `database.bundled=true` without a `database.backends` descriptor for the
+  type (typo guard: fails listing the bundled names)
+- Bundled database without `database.existingSecret` (no default credentials)
+- External SQL without host/port, or without per-service credentials; unknown
+  external types require an explicit port
+- Bundled mode with per-service `existingSecret` (external-only contract) or
+  per-app name/user not matching a `database.databases` entry
 - RC/OC with the same external database name
 - RC/OC without `runtimeSecret`
 - `verifyClient=true` without TLS
@@ -517,18 +534,22 @@ All application pods run with:
 ### 7.2 Adding a new database backend
 
 The type space is **open by design** — the chart enumerates no database
-types as an architectural limit. Any `database.type` other than
-`postgresql` is external SQL: set `database.type`/`host`/`port` (+
-`database.<app>.existingSecret` per service) and the type flows to the
-services verbatim (`PERSISTENCE_MODE` passthrough) with **zero chart
-changes**. The prerequisites are service support (registry-center: file,
-sqlite, postgresql, gauss, mysql; orchestration-center currently: file,
-postgresql, mysql — a service constraint the chart passes through) and an
-explicit `database.port` for unknown types (no default port is known).
-PostgreSQL is simply today's only entry in the bundled set; promoting a
-new backend to bundled follows the offline chart's data-driven pattern
-(`database.backends` descriptor + one generic workload template), not a
-per-type template.
+types as an architectural limit. Two extension paths, both data-driven:
+
+- **External SQL** (`database.bundled=false`): set `database.type`/`host`/
+  `port` (+ per-service `database.<app>.existingSecret`) and the type flows
+  to the services verbatim (`PERSISTENCE_MODE` passthrough) with **zero
+  chart changes**. Prerequisites: service support (registry-center: file,
+  sqlite, postgresql, gauss, mysql; orchestration-center currently: file,
+  postgresql, mysql — a service constraint the chart passes through) and an
+  explicit `database.port` for types without a descriptor.
+- **Bundled** (`database.bundled=true`): add **one `database.backends`
+  descriptor entry** (image, port, password env/key, probes with the
+  `{port}` placeholder, volumes, `credentialSecretSuffix`) + **one init
+  ConfigMap** (`database/init/<type>.yaml`, bootstrap SQL dialect). The
+  generic workload/storage templates render it, validation follows the
+  descriptor keys, and the wizard's backend menu picks it up automatically —
+  zero template, validator or wizard changes.
 
 ### 7.3 Adding a new frontend type
 

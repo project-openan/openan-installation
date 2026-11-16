@@ -12,47 +12,142 @@ namespace: openan
 createNamespace: true
 
 # =============================================================================
-# PostgreSQL Configuration (Shared)
+# Database (unified contract — one type flows through every layer, issue #36)
 # =============================================================================
-postgresql:
-  # Set to false to use external database
-  enabled: true
-  # External database settings (when enabled=false)
-  externalHost: ""
-  port: 5432
-  # Database credentials
-  # Use existingSecret to reference an existing K8S secret instead of defining password here
+#   database.bundled=true  -> the type selects a database.backends entry and
+#                            the generic database/statefulset.yaml +
+#                            database/storage.yaml templates deploy the
+#                            in-cluster StatefulSet from the descriptor
+#                            (data, not code).
+#   database.bundled=false -> EXTERNAL SQL: no database workload; the type
+#                            reaches the services verbatim (PERSISTENCE_MODE
+#                            passthrough — the services must support it:
+#                            registry-center file/sqlite/postgresql/gauss/
+#                            mysql; orchestration-center currently file/
+#                            postgresql/mysql).
+# Adding a bundled backend = one descriptor entry + one init file
+# (database/init/<type>.yaml); the wizard's backend menu follows these keys.
+database:
+  type: postgresql
+  bundled: true
+  # External SQL (bundled=false): host + port are required (port defaults
+  # come from the backend descriptors when the type has one; unknown types
+  # must set it explicitly). Bundled custom port: database.port overrides
+  # the descriptor default for both the listener and the services.
+  host: ""
+  port: null
+  # Credential Secret shared by the bundled database bootstrap and both
+  # services (key per backend descriptor: postgres-password /
+  # mysql-root-password). External SQL instead uses the per-service
+  # existingSecret references below. Never a default password: set
+  # existingSecret, or password only for pure-Helm evaluation fallback.
   existingSecret: ""
-  password: ""  # Prefer existingSecret; never deploy a shared default password
-  # Storage
+  password: ""
+  # Bundled-database storage (operator choices; per-backend pvName/hostPath
+  # defaults live in the backend descriptors). createStorageClass also
+  # serves registry/orchestration local PVs and applies even when the
+  # database is external.
   storage:
     size: 20Gi
     storageClassName: ""
-    # createStorageClass also serves registry/orchestration local PVs and
-    # applies even when PostgreSQL is external (external SQL deployments).
     createStorageClass: false
     createPV: false
     useHostPath: false
-    hostPath: "/data/openan-postgres"
-    localPath: "/data/openan-postgres"
+    hostPath: ""   # empty -> backend descriptor default
+    localPath: ""  # empty -> backend descriptor default
     nodeName: ""
     reclaimPolicy: "Retain"
     setDefault: false
-    pvName: "openan-postgres-pv"
-  # Resource limits
-  resources:
-    requests:
-      cpu: 250m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  # Database definitions
+    pvName: ""     # empty -> backend descriptor default
+  # Databases created by the bundled init script; the per-service name/user
+  # below must match an entry when bundled (validated).
   databases:
     - name: registry_center
       user: registry
     - name: orchestration_center
       user: opena2a_t
+  # Per-service SQL identity (also the external SQL credential contract).
+  registry:
+    name: registry_center
+    username: registry
+    existingSecret: ""   # external SQL only (rejected when bundled)
+    passwordKey: db-password
+  orchestration:
+    name: orchestration_center
+    username: opena2a_t
+    existingSecret: ""   # external SQL only (rejected when bundled)
+    passwordKey: db-password
+  # In-cluster backend descriptors — DATA, not templates. The generic
+  # workload/storage templates render any entry; only the init ConfigMap
+  # (database/init/<type>.yaml) is per-backend (bootstrap SQL dialect).
+  # "{port}" inside args/probe commands is substituted with the backend
+  # port; credentialSecretSuffix names the wizard's credential Secret
+  # (<release>-<suffix>; historical names stay stable).
+  backends:
+    postgresql:
+      name: postgres                  # workload suffix: openan-postgres
+      image: "postgres:15-alpine"
+      port: 5432
+      passwordEnv: POSTGRES_PASSWORD
+      passwordKey: postgres-password
+      credentialSecretSuffix: pg
+      env:
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+      args: ["-p", "{port}"]
+      readinessProbe:
+        command: [pg_isready, -U, postgres, -p, "{port}"]
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      livenessProbe:
+        command: [pg_isready, -U, postgres, -p, "{port}"]
+        initialDelaySeconds: 15
+        periodSeconds: 30
+      dataVolume:
+        name: postgres-data
+        mountPath: /var/lib/postgresql/data
+      initMountPath: /docker-entrypoint-initdb.d
+      pvName: openan-postgres-pv
+      hostPath: /data/openan-postgres
+      localPath: /data/openan-postgres
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    mysql:
+      name: mysql
+      image: "mysql:8.4.3"
+      port: 3306
+      passwordEnv: MYSQL_ROOT_PASSWORD
+      passwordKey: mysql-root-password
+      credentialSecretSuffix: mysql
+      env: []
+      args: []
+      readinessProbe:
+        command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_ROOT_PASSWORD}"']
+        initialDelaySeconds: 10
+        periodSeconds: 10
+      livenessProbe:
+        command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_ROOT_PASSWORD}"']
+        initialDelaySeconds: 30
+        periodSeconds: 30
+      dataVolume:
+        name: mysql-data
+        mountPath: /var/lib/mysql
+      initMountPath: /docker-entrypoint-initdb.d
+      pvName: openan-mysql-pv
+      hostPath: /data/openan-mysql
+      localPath: /data/openan-mysql
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
 
 # =============================================================================
 # Registry Center Configuration (Required)
@@ -340,18 +435,3 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-# Primary SQL type and hosting are separate choices. MySQL is external only.
-database:
-  type: postgresql
-  host: ""  # Required for mysql; PostgreSQL falls back to postgresql.externalHost
-  port: null  # External SQL only: null selects PostgreSQL 5432 / MySQL 3306; integer 1..65535.
-  registry:
-    name: registry_center
-    username: registry
-    existingSecret: ""
-    passwordKey: db-password
-  orchestration:
-    name: orchestration_center
-    username: opena2a_t
-    existingSecret: ""
-    passwordKey: db-password

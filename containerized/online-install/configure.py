@@ -4,15 +4,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Guided evaluation configuration; secrets only in memory and kubectl stdin.
 
-Interactive wizard: components -> image tags -> LLM -> signing -> secrets.
-Everything else is automatic evaluation mode: in-cluster PostgreSQL, storage
-on the cluster's default StorageClass (automatic node-pinned local hostPath
-fallback when none exists), auto signing, generated models.yaml, and the
+Interactive wizard: components -> image tags -> database -> LLM -> signing
+-> secrets. The database is one open contract: an in-cluster backend (menu
+from the chart's database.backends data) or an external SQL whose type
+passes through to the services verbatim. Storage is automatic (the
+cluster's default StorageClass, with a node-pinned local hostPath fallback
+when none exists), as are auto signing, generated models.yaml, and the
 empty catch-all Ingress host for direct LB-IP access.
 
-Production profiles (external SQL, HTTPS, host-based routing) use reviewed
-values (see example.values.yaml) and existing Secrets instead. No defaults
-for passwords, no credential arguments, no Secret overwrite.
+Production profiles (HTTPS, host-based routing) use reviewed values (see
+example.values.yaml) and existing Secrets instead. No defaults for
+passwords, no credential arguments, no Secret overwrite.
 """
 import argparse
 import base64
@@ -35,6 +37,63 @@ MAX_ATTEMPTS = 3
 
 def _kubectl_json(args, stdin=None):
     return subprocess.run(["kubectl", *args], input=stdin, capture_output=True, text=True)
+
+
+CHART_VALUES = Path(__file__).resolve().parent / "openan-chart" / "values.yaml"
+
+# Fields of each database.backends entry the wizard needs; everything else
+# (image, probes, volumes) is consumed by the chart's generic templates.
+_BACKEND_FIELDS = ("passwordKey", "credentialSecretSuffix", "port")
+
+
+def bundled_backends():
+    """Bundled in-cluster backends are data in the chart: the keys of
+    database.backends in openan-chart/values.yaml. The wizard stays
+    type-agnostic — adding a bundled backend = one chart descriptor entry +
+    one init template, and this menu follows without any wizard change.
+    Narrow YAML parse (no PyYAML: the installer requires only python3).
+    Returns {type: {passwordKey, credentialSecretSuffix, port}}, falling
+    back to the historical postgresql-pg pair when the chart is unreadable.
+    """
+    fallback = {"postgresql": {"passwordKey": "postgres-password",
+                               "credentialSecretSuffix": "pg", "port": "5432"}}
+    try:
+        lines = CHART_VALUES.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return dict(fallback)
+    backends, current = {}, None
+    in_database = in_backends = False
+    for line in lines:
+        # Order matters: "database:" itself is a top-level line, so the
+        # database entry must be recognized before the generic reset.
+        if re.match(r"^database:\s*$", line):
+            in_database = True
+            in_backends = False
+            current = None
+            continue
+        if re.match(r"^\S", line):
+            in_database = in_backends = False
+            current = None
+            continue
+        if not in_database:
+            continue
+        if re.match(r"^  backends:\s*$", line):
+            in_backends = True
+            continue
+        if in_backends and re.match(r"^  \S", line):
+            in_backends = False
+            current = None
+            continue
+        if in_backends:
+            match = re.match(r"^    ([a-z0-9_-]+):\s*$", line)
+            if match:
+                current = match.group(1)
+                backends.setdefault(current, {})
+                continue
+            field = re.match(r"^      (\w+):\s*(\S+)\s*$", line)
+            if current is not None and field and field.group(1) in _BACKEND_FIELDS:
+                backends[current][field.group(1)] = field.group(2).strip('"')
+    return backends or dict(fallback)
 
 
 # Objects the wizard creates carry this label; a re-run adopts them
@@ -324,9 +383,45 @@ def configure(namespace, release, output, tag=None):
             print(f"  -> frontend = workflow-designer (follows orchestration tag: {tags['frontend']})")
 
     # ------------------------------------------------------------------
-    # Step 3: SQL and Storage (automatic)
+    # Step 3: SQL and Storage
     # ------------------------------------------------------------------
-    step_banner(3, 5, "SQL & Storage (automatic)")
+    step_banner(3, 5, "SQL & Storage")
+    # One open contract (issue #36): the bundled menu follows the chart's
+    # database.backends data; external SQL passes the type through verbatim
+    # (PERSISTENCE_MODE) — the services must support it.
+    backends = bundled_backends()
+    db_bundled = True
+    db_type = "postgresql"
+    db_host = db_port = None
+    if choose("Database", ["in-cluster", "external SQL"], "in-cluster") == "external SQL":
+        db_bundled = False
+        for attempt in range(MAX_ATTEMPTS):
+            db_type = ask("External SQL type (postgresql|mysql|gauss|...; the services must support it)").strip().lower()
+            if db_type and not re.search(r"[\sA-Z]", db_type):
+                break
+            print(f"  [WARN] Type must be non-empty lowercase without spaces ({attempt + 1}/{MAX_ATTEMPTS})")
+        else:
+            raise ValueError("External SQL type must be non-empty lowercase without spaces")
+        db_host = ask("External SQL host")
+        # Port default mirrors the chart: descriptor port when the type has
+        # one (postgresql/mysql), explicit otherwise.
+        descriptor_port = backends.get(db_type, {}).get("port", "")
+        db_port_default = str(descriptor_port) if descriptor_port else ""
+        for attempt in range(MAX_ATTEMPTS):
+            db_port = ask("External SQL port (1..65535)", default=db_port_default)
+            if db_port.isdigit() and 1 <= int(db_port) <= 65535:
+                break
+            print(f"  [WARN] Port must be an integer in 1..65535 ({attempt + 1}/{MAX_ATTEMPTS})")
+        else:
+            raise ValueError("External SQL port must be an integer in 1..65535")
+        print(f"  -> external {db_type} at {db_host}:{db_port}"
+              " (the databases/users must already exist on it)")
+    else:
+        if len(backends) > 1:
+            db_type = choose("Database backend", list(backends), "postgresql")
+        else:
+            db_type = next(iter(backends), "postgresql")
+        print(f"  -> bundled in-cluster {db_type}")
     storage_node = None
     local_storage_class = "openan-local"
     if has_default_storageclass():
@@ -339,9 +434,10 @@ def configure(namespace, release, output, tag=None):
                   " remove the PV and its hostPath data first (uninstall.sh can clean it)")
         storage_node = first_node() or None
         if storage_node:
+            scope = "registry, orchestration" if not db_bundled else f"{db_type}, registry, orchestration"
             print(f"  Local evaluation storage: {local_storage_class} StorageClass +"
                   f" node-pinned hostPath PVs on {storage_node}"
-                  " (postgres, registry, orchestration)")
+                  f" ({scope})")
         else:
             print("  Warning: no node name detectable; claims are left unbound."
                   " Provide a StorageClass or configure persistence in reviewed values")
@@ -414,18 +510,21 @@ def configure(namespace, release, output, tag=None):
     print("  Setting up secrets (input is hidden)...")
     print()
 
-    # PostgreSQL password
+    # Database password: the bundled backend's bootstrap credential, or the
+    # external SQL credential shared by both services' Secrets.
+    db_password_label = ("External SQL password (8+ characters, shared by both services)"
+                         if not db_bundled else f"{db_type} password (8+ characters)")
     for attempt in range(MAX_ATTEMPTS):
-        in_cluster_password = ask_secret("PostgreSQL password (8+ characters)")
-        if len(in_cluster_password) >= 8:
+        db_password = ask_secret(db_password_label)
+        if len(db_password) >= 8:
             break
         print(f"  [WARN] Password must be at least 8 characters ({attempt + 1}/{MAX_ATTEMPTS})")
     else:
         # Issue #40: offer skip-or-abort after MAX_ATTEMPTS.
-        if _offer_skip("PostgreSQL password"):
-            in_cluster_password = ""
+        if _offer_skip("Database password"):
+            db_password = ""
         else:
-            raise ValueError("PostgreSQL password must be at least 8 characters")
+            raise ValueError("Database password must be at least 8 characters")
 
     # Admin password
     admin = None
@@ -460,7 +559,21 @@ def configure(namespace, release, output, tag=None):
     subprocess.run(["kubectl", "apply", "-f", "-"], input=ns.stdout, text=True, check=True)
 
     # --- Create Secrets / ConfigMaps -----------------------------------------
-    create_secret(namespace, prefix + "pg", {"postgres-password": in_cluster_password})
+    if db_bundled:
+        # Bundled backend credential: name and key follow the chart's
+        # database.backends descriptor (openan-pg/postgres-password,
+        # openan-mysql/mysql-root-password, ...).
+        backend = backends.get(db_type, {})
+        db_suffix = backend.get("credentialSecretSuffix") or db_type
+        db_key = backend.get("passwordKey") or "password"
+        create_secret(namespace, prefix + db_suffix, {db_key: db_password})
+    else:
+        # Per-service external SQL credentials (chart contract:
+        # database.<service>.existingSecret, key db-password).
+        if components["registry"]:
+            create_secret(namespace, prefix + "rc-db", {"db-password": db_password})
+        if components["orchestration"]:
+            create_secret(namespace, prefix + "oc-db", {"db-password": db_password})
 
     if configure_llm == "now":
         for component in enabled:
@@ -566,14 +679,22 @@ def configure(namespace, release, output, tag=None):
         frontend_values["type"] = frontend_type or "workflow-designer"
     if https_enabled == "yes":
         frontend_values.update(https_config.get("backendTls", {}))
+    database_values = {"bundled": db_bundled, "type": db_type}
+    if db_bundled:
+        database_values["existingSecret"] = prefix + (backends.get(db_type, {}).get("credentialSecretSuffix") or db_type)
+    else:
+        database_values.update({"host": db_host, "port": int(db_port)})
+        if components["registry"]:
+            database_values["registry"] = {"existingSecret": prefix + "rc-db"}
+        if components["orchestration"]:
+            database_values["orchestration"] = {"existingSecret": prefix + "oc-db"}
     values = {"namespace": namespace, "frontend": frontend_values,
-              "postgresql": {"enabled": True, "existingSecret": prefix + "pg"},
-              "database": {"type": "postgresql"}}
+              "database": database_values}
     if storage_node is not None:
-        values["postgresql"]["storage"] = {"createStorageClass": True,
-                                           "storageClassName": local_storage_class,
-                                           "createPV": True, "useHostPath": True,
-                                           "nodeName": storage_node}
+        storage_block = {"createStorageClass": True, "storageClassName": local_storage_class}
+        if db_bundled:
+            storage_block.update({"createPV": True, "useHostPath": True, "nodeName": storage_node})
+        values["database"]["storage"] = storage_block
     if components["registry"]:
         values["registry"] = {"runtimeSecret": prefix + "rc-runtime",
                               "credentialSecret": prefix + "rc-credentials",

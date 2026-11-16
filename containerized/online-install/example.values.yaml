@@ -10,14 +10,18 @@
 
 namespace: openan
 
-# In-cluster PostgreSQL (evaluation default)
-postgresql:
-  enabled: true
-  # Use postgresql.existingSecret for production (key: postgres-password)
-  existingSecret: openan-pg
-
+# One open contract (issue #36): database.bundled + database.type select the
+# SQL. bundled=true deploys the in-cluster backend from the chart's
+# database.backends descriptor data (postgresql here; mysql works too);
+# bundled=false is external SQL — set host/port and per-service existingSecret
+# (the type passes through to the services verbatim; they must support it).
 database:
   type: postgresql
+  bundled: true
+  # Shared credential for the bundled bootstrap and both services.
+  # Use a pre-created Secret for production (key per backend descriptor:
+  # postgres-password / mysql-root-password).
+  existingSecret: openan-pg
 
 # Registry Center
 registry:
@@ -63,7 +67,7 @@ frontend:
 # Bare-metal clusters without a StorageClass (single-node evaluation) can
 # uncomment this block instead of provisioning storage: it creates the shared
 # openan-local StorageClass and node-pinned hostPath PVs for all claims.
-# postgresql:
+# database:
 #   storage:
 #     createStorageClass: true
 #     storageClassName: openan-local
@@ -71,6 +75,8 @@ frontend:
 #     useHostPath: true
 #     nodeName: node-1
 # registry:
+#   persistence: { storageClassName: openan-local, createPV: true, useHostPath: true, nodeName: node-1 }
+# orchestration:
 #   persistence: { storageClassName: openan-local, createPV: true, useHostPath: true, nodeName: node-1 }
 # orchestration:
 #   persistence: { storageClassName: openan-local, createPV: true, useHostPath: true, nodeName: node-1 }
