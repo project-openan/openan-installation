@@ -51,6 +51,7 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- if and (eq .Values.registry.identityMode "token") (eq .Values.registry.authMode "static_bearer") (not .Values.registry.credentialSecret) }}{{ fail "static_bearer requires registry.credentialSecret with integration_credentials.conf" }}{{ end }}
 {{- if not (has .Values.registry.signing.mode (list "auto" "secret" "off")) }}{{ fail "registry.signing.mode must be auto, secret or off" }}{{ end }}
 {{- if and (eq .Values.registry.signing.mode "secret") (not .Values.registry.signing.existingSecret) }}{{ fail "signing.mode=secret requires existingSecret" }}{{ end }}
+{{- if and .Values.registry.tls.enabled .Values.registry.tls.verifyClient (or .Values.registry.livenessProbe.httpGet .Values.registry.readinessProbe.httpGet) }}{{ fail "registry verifyClient (mTLS) cannot be probed via httpGet — kubelet presents no client certificate; override registry livenessProbe/readinessProbe with an exec probe" }}{{ end }}
 {{- if .Values.registry.vectordb.enabled }}{{ fail "Current RC legacy vector-only mode has no authoritative SQL record store; keep vectordb.enabled=false for full business APIs" }}{{ end }}
 {{- end }}
 {{- if and .Values.orchestration.enabled (or (ne (toString .Values.orchestration.replicas) "1") .Values.orchestration.hpa.enabled) }}{{ fail "OC sessions are process-local: use one replica and disable HPA until shared sessions exist" }}{{ end }}

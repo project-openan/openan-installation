@@ -224,19 +224,27 @@ registry:
     limits:
       cpu: 500m
       memory: 512Mi
-  # Probes
+  # Probes: httpGet against the service's own health endpoint (measured
+  # 0.3s / HTTP 200 in the field). Do NOT switch back to exec: every kubelet
+  # exec probe spawns a fresh Python process whose cold start (ssl +
+  # app_config imports) measured ~13s on ARM64 with a 500m CPU limit —
+  # permanently above the probe timeout, crash-looping a healthy container.
+  # The kubelet does not verify the server certificate on HTTPS probes; the
+  # scheme is injected by the template (HTTPS when tls.enabled). mTLS
+  # (verifyClient=true) cannot be probed via httpGet — validated separately,
+  # override with an exec probe there.
   livenessProbe:
-    exec:
-      command: ["python", "-m", "agent_registry.healthcheck"]
+    httpGet:
+      path: /health
+      port: 5000
     initialDelaySeconds: 30
     periodSeconds: 30
-    timeoutSeconds: 10
   readinessProbe:
-    exec:
-      command: ["python", "-m", "agent_registry.healthcheck"]
+    httpGet:
+      path: /health
+      port: 5000
     initialDelaySeconds: 10
     periodSeconds: 10
-    timeoutSeconds: 10
 
 # =============================================================================
 # Orchestration Center Configuration (Optional)

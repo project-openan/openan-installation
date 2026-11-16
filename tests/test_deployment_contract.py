@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 """Helm render contracts and controlled build failures; not a cluster smoke test."""
+import json
 import os
 import re
 from pathlib import Path
@@ -27,7 +28,17 @@ def render(settings=None, success=True):
         pytest.skip("Set HELM_BIN to run real Helm render validation")
     command = [HELM, "template", "contract", str(CHART), "--namespace", "openan"]
     for key, value in {**BASE, **(settings or {})}.items():
-        command += ["--set", f"{key}={str(value).lower() if isinstance(value, bool) else value}"]
+        if value is None:
+            # Explicit key removal (helm --set key=null): used to replace
+            # default probe blocks — --set/--set-json only deep-merge maps.
+            command += ["--set", f"{key}=null"]
+        elif isinstance(value, bool):
+            command += ["--set", f"{key}={str(value).lower()}"]
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                command += ["--set", f"{key}[{index}]={item}"]
+        else:
+            command += ["--set", f"{key}={value}"]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=40)
     assert (result.returncode == 0) is success, result.stderr
     if not success:
@@ -66,7 +77,12 @@ def test_database_and_protocol_matrix(protocol, db):
         deployment = docs[component]["spec"]["template"]["spec"]
         assert deployment["securityContext"]["fsGroup"] == 10001
         container = deployment["containers"][0]
-        assert "exec" in container["readinessProbe"]
+        # RC probes are httpGet (field fix: exec cold-started ~13s on ARM64);
+        # OC keeps its exec healthcheck.
+        if component == "registry-center":
+            assert "httpGet" in container["readinessProbe"]
+        else:
+            assert "exec" in container["readinessProbe"]
         assert container["envFrom"][1]["secretRef"]["name"] in {"rc-runtime", "oc-runtime"}
         assert any(m["subPath"] == "models.yaml" for m in container["volumeMounts"] if "subPath" in m)
     assert docs["orchestration-center-config"]["data"]["AGENT_REGISTRY_URL"].startswith(protocol + "://")
@@ -83,14 +99,34 @@ def test_database_and_protocol_matrix(protocol, db):
         assert docs["registry-center-config"]["data"]["DB_PORT"] == "3306"
 
 
+def _exec_probe_settings(component="registry"):
+    # helm --set deep-merges maps, so replacing a default probe block means
+    # removing the httpGet key explicitly (=null) and setting the exec
+    # fields — the same shape an operator's values file would have.
+    healthcheck = {"registry": "agent_registry.healthcheck",
+                   "orchestration": "orchestrate.server.healthcheck"}[component]
+    settings = {}
+    for probe in ("livenessProbe", "readinessProbe"):
+        settings[f"{component}.{probe}.httpGet"] = None
+        settings[f"{component}.{probe}.exec"] = ["python", "-m", healthcheck]
+        settings[f"{component}.{probe}.initialDelaySeconds"] = 30
+        settings[f"{component}.{probe}.periodSeconds"] = 30
+        settings[f"{component}.{probe}.timeoutSeconds"] = 15
+    return settings
+
+
 def test_mtls_material_and_probes_are_wired():
-    docs = render({"registry.tls.enabled": True, "registry.tls.verifyClient": True,
-                   "registry.tls.existingSecret": "rc-tls", "registry.identityMode": "certificate",
-                   "registry.ingressClientSecret": "rc-ingress-client",
-                   "orchestration.tls.enabled": True, "orchestration.tls.verifyClient": True,
-                   "orchestration.tls.existingSecret": "oc-tls", "orchestration.ingressClientSecret": "oc-ingress-client",
-                   "orchestration.registryClientSecret": "oc-registry-client",
-                   "frontend.backendTls.existingSecret": "frontend-client"})
+    # mTLS (verifyClient) cannot be probed via httpGet — the operator must
+    # override with an exec probe (the app-level healthcheck then carries
+    # the probe client certificate).
+    docs = render({**{"registry.tls.enabled": True, "registry.tls.verifyClient": True,
+                      "registry.tls.existingSecret": "rc-tls", "registry.identityMode": "certificate",
+                      "registry.ingressClientSecret": "rc-ingress-client",
+                      "orchestration.tls.enabled": True, "orchestration.tls.verifyClient": True,
+                      "orchestration.tls.existingSecret": "oc-tls", "orchestration.ingressClientSecret": "oc-ingress-client",
+                      "orchestration.registryClientSecret": "oc-registry-client",
+                      "frontend.backendTls.existingSecret": "frontend-client"},
+                   **_exec_probe_settings()})
     for comp, env in [("registry-center", "REGISTRY"), ("orchestration-center", "ORCH")]:
         assert "HEALTHCHECK_CLIENT_CERT" in " ".join(docs[comp + "-config"]["data"])
         mounts = docs[comp]["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
@@ -100,23 +136,58 @@ def test_mtls_material_and_probes_are_wired():
     assert "proxy_ssl_certificate_key" in docs["openan-frontend-nginx-config"]["data"]["default.conf"]
 
 
+def test_mtls_with_http_get_probe_is_rejected():
+    # httpGet probes present no client certificate: with verifyClient=true
+    # they would fail forever and crash-loop a healthy RC (the same failure
+    # class as the ARM64 exec cold-start). The default httpGet probes plus
+    # verifyClient must fail at render with the exec-override guidance.
+    assert "override registry livenessProbe" in render(
+        {"registry.tls.enabled": True, "registry.tls.verifyClient": True,
+         "registry.tls.existingSecret": "rc-tls"}, success=False)
+
+
 @pytest.mark.parametrize("name", ["registry-center", "orchestration-center"])
 def test_probe_timeout_seconds_exceeds_healthcheck_time(name):
-    # BUG-5: the exec healthchecks (Python startup + RSA3072 handshake) take
+    # BUG-5: exec healthchecks (Python startup + RSA3072 handshake) take
     # ~2.3s, beyond K8s's 1s default probe timeout; liveness killed the pod
-    # before it ever became Ready. The same applies to startupProbe: the
-    # orchestration startup probe measured 1.3-1.4s, so the K8s 1s default
-    # made it fail forever. Guard a lower bound (>= 3s) instead of pinning
-    # the exact value, so the timeout can be tuned later.
+    # before it ever became Ready. Guard a lower bound (>= 3s) on EXEC
+    # probes; httpGet probes answer in ~0.3s and need no raised timeout.
+    # (RC moved to httpGet altogether: on ARM64 with a 500m CPU limit every
+    # exec probe cold-started a fresh Python process (~13s) and crash-looped
+    # a healthy container — field regression.)
     docs = render()
     container = docs[name]["spec"]["template"]["spec"]["containers"][0]
     for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
         if probe not in container:
             continue
+        if container[probe].get("httpGet") or container[probe].get("tcpSocket"):
+            continue
         timeout = container[probe].get("timeoutSeconds")
         assert timeout is not None and timeout >= 3, (
             f"{name} {probe} timeoutSeconds must be set and >= 3s, got {timeout}"
         )
+
+
+def test_registry_probes_are_http_get_with_tls_aware_scheme():
+    # Field regression: exec probes cold-started a Python process per check
+    # (~13s on ARM64 / 500m CPU) and crash-looped a healthy RC. The defaults
+    # are httpGet against /health; the scheme follows the TLS switch (the
+    # kubelet does not verify the server certificate), and the mTLS path
+    # must override with an exec probe (validated separately).
+    docs = render()
+    container = docs["registry-center"]["spec"]["template"]["spec"]["containers"][0]
+    for probe in ("livenessProbe", "readinessProbe"):
+        assert container[probe]["httpGet"] == {"path": "/health", "port": 5000, "scheme": "HTTP"}
+    https = render({"registry.tls.enabled": True, "registry.tls.existingSecret": "rc-tls",
+                    "registry.ingressClientSecret": "rc-ingress-trust",
+                    "orchestration.registryClientSecret": "oc-registry-trust"})
+    container = https["registry-center"]["spec"]["template"]["spec"]["containers"][0]
+    for probe in ("livenessProbe", "readinessProbe"):
+        assert container[probe]["httpGet"]["scheme"] == "HTTPS"
+    # OC keeps its exec healthcheck (measured ~1.4s; the authenticated
+    # healthcheck carries the probe client certificate for mTLS).
+    oc = docs["orchestration-center"]["spec"]["template"]["spec"]["containers"][0]
+    assert "exec" in oc["livenessProbe"]
 
 
 @pytest.mark.parametrize("invalid,message", [
@@ -187,10 +258,14 @@ def test_a2at_env_cannot_be_shadowed_via_extra_env():
 @pytest.mark.parametrize("verify_server", [False, True])
 @pytest.mark.parametrize("mtls", [False, True])
 def test_registry_trust_and_client_identity_are_independent(verify_server, mtls):
-    docs = render({"registry.tls.enabled": True, "registry.tls.existingSecret": "rc-tls",
-                   "registry.tls.verifyClient": mtls, "registry.ingressClientSecret": "ingress-client",
-                   "orchestration.registryClientSecret": "registry-client",
-                   "orchestration.clientVerifyServer": verify_server})
+    settings = {"registry.tls.enabled": True, "registry.tls.existingSecret": "rc-tls",
+                "registry.tls.verifyClient": mtls, "registry.ingressClientSecret": "ingress-client",
+                "orchestration.registryClientSecret": "registry-client",
+                "orchestration.clientVerifyServer": verify_server}
+    if mtls:
+        # mTLS cannot be probed via httpGet: override with the exec probe.
+        settings.update(_exec_probe_settings())
+    docs = render(settings)
     env = docs["orchestration-center-config"]["data"]
     assert ("REGISTRY_CA_FILE" in env) is verify_server
     assert ("REGISTRY_CLIENT_CERT" in env) is mtls
