@@ -19,10 +19,14 @@ data:
   create-databases.sh: |
     #!/bin/bash
     set -e
+    # Escape single quotes for SQL string literals: the root password is
+    # operator input and may contain ' which would otherwise terminate the
+    # literal and break the bootstrap.
+    ESCAPED_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD//\'/\'\'}"
     {{ range .Values.database.databases }}
     mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" <<EOSQL
     CREATE DATABASE IF NOT EXISTS {{ .name }} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-    CREATE USER IF NOT EXISTS '{{ .user }}'@'%' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+    CREATE USER IF NOT EXISTS '{{ .user }}'@'%' IDENTIFIED BY '${ESCAPED_ROOT_PASSWORD}';
     GRANT ALL PRIVILEGES ON {{ .name }}.* TO '{{ .user }}'@'%';
     EOSQL
     {{ end }}

@@ -19,9 +19,13 @@ data:
   create-databases.sh: |
     #!/bin/bash
     set -e
+    # Escape single quotes for SQL string literals: the password is operator
+    # input and may contain ' which would otherwise terminate the literal and
+    # break the bootstrap ('' is the SQL escape inside '...' literals).
+    ESCAPED_PASSWORD="${POSTGRES_PASSWORD//\'/\'\'}"
     {{ range .Values.database.databases }}
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<EOSQL
-    CREATE USER {{ .user }} WITH PASSWORD '${POSTGRES_PASSWORD}';
+    CREATE USER {{ .user }} WITH PASSWORD '${ESCAPED_PASSWORD}';
     CREATE DATABASE {{ .name }} OWNER {{ .user }};
     GRANT ALL PRIVILEGES ON DATABASE {{ .name }} TO {{ .user }};
     EOSQL

@@ -399,6 +399,10 @@ def test_wizard_external_sql_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
     monkeypatch.setattr(module, "create_configmap", lambda *args: None)
     monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
+    # No default StorageClass: the external-SQL fallback emits the shared
+    # class for the rc/oc runtime PVs (no database PV — nothing is bundled).
+    monkeypatch.setattr(module, "first_node", lambda: "node-1")
+    monkeypatch.setattr(module, "has_default_storageclass", lambda: False)
     output = tmp_path / "values.json"
     module.configure("openan", "openan", output)
     values = json.loads(output.read_text(encoding="utf-8"))
@@ -407,7 +411,9 @@ def test_wizard_external_sql_flow(tmp_path, monkeypatch):
     assert values["database"] == {"bundled": False, "type": "gauss",
                                   "host": "gauss.internal", "port": 5433,
                                   "registry": {"existingSecret": "openan-rc-db"},
-                                  "orchestration": {"existingSecret": "openan-oc-db"}}
+                                  "orchestration": {"existingSecret": "openan-oc-db"},
+                                  "storage": {"createStorageClass": True,
+                                              "storageClassName": "openan-local"}}
     assert saved["openan-rc-db"] == {"db-password": "ExtSecret123!"}
     assert saved["openan-oc-db"] == {"db-password": "ExtSecret123!"}
     assert "openan-pg" not in saved and "openan-mysql" not in saved

@@ -409,6 +409,32 @@ def test_bundled_database_custom_port_is_used_by_server_probe_and_services():
     assert docs["orchestration-center-config"]["data"]["DB_PORT"] == "5544"
 
 
+def test_external_sql_storage_class_fallback_renders():
+    # External SQL on a cluster without a default StorageClass still needs
+    # the shared openan-local class for the rc/oc runtime PVs. Regression:
+    # the class labels used openan.db.labels -> dbWorkloadName, which FAILS
+    # for descriptor-less external types (e.g. gauss) — the wizard emits
+    # createStorageClass for external SQL on such clusters, so this exact
+    # combination must render. The class carries the COMMON labels only.
+    docs = render({"database.bundled": False, "database.type": "gauss",
+                  "database.host": "g.internal", "database.port": 5432,
+                  "database.registry.existingSecret": "rc-db",
+                  "database.orchestration.existingSecret": "oc-db",
+                  "database.storage.createStorageClass": True,
+                  "database.storage.storageClassName": "openan-local",
+                  "registry.persistence.storageClassName": "openan-local",
+                  "registry.persistence.createPV": True,
+                  "registry.persistence.useHostPath": True,
+                  "registry.persistence.nodeName": "node-a"})
+    klass = docs["StorageClass/openan-local"]
+    assert klass["provisioner"] == "kubernetes.io/no-provisioner"
+    assert klass["metadata"]["labels"]["app.kubernetes.io/part-of"] == "openan"
+    # No database workload or PV renders for external types.
+    assert "openan-postgres" not in docs and "openan-mysql" not in docs
+    assert "openan-postgres-pv" not in docs
+    assert docs["registry-center-runtime"]["spec"]["storageClassName"] == "openan-local"
+
+
 def test_bundled_mysql_renders_from_descriptor():
     # The generic database templates render the mysql descriptor: same
     # workload names, env, probes and init dialect as the historical
@@ -427,6 +453,36 @@ def test_bundled_mysql_renders_from_descriptor():
     assert docs["registry-center-config"]["data"]["PERSISTENCE_MODE"] == "mysql"
     assert docs["registry-center-config"]["data"]["DB_PORT"] == "3306"
     assert docs["registry-center-config"]["data"]["DB_HOST"] == "openan-mysql"
+
+
+def test_mysql_init_script_survives_quote_password(tmp_path):
+    # A root password containing a single quote must not break the bootstrap
+    # SQL: the init script escapes ' by doubling before interpolating into
+    # the IDENTIFIED BY literal. Functional check (needs bash): run the
+    # rendered script with a fake mysql that records its stdin.
+    if not BASH:
+        pytest.skip("Bash unavailable")
+    # Windows ships a WSL bash.exe stub without any distribution installed;
+    # probe it instead of failing on the stub's usage message.
+    probe = subprocess.run([BASH, "-c", "echo ok"], capture_output=True, text=True)
+    if probe.returncode != 0 or "ok" not in probe.stdout:
+        pytest.skip("Bash stub without a working shell (WSL without a distribution)")
+    import shlex
+    docs = render({"database.type": "mysql"})
+    script = docs["openan-mysql-init"]["data"]["create-databases.sh"]
+    capture = tmp_path / "sql.txt"
+    harness = tmp_path / "run.sh"
+    harness.write_text(
+        "mysql() { cat >> \"$CAPTURE\"; }\n"
+        "export CAPTURE=" + shlex.quote(str(capture)) + "\n"
+        "export MYSQL_ROOT_PASSWORD=\"p'q\\\"r\"\n"
+        + script, encoding="utf-8")
+    subprocess.run([BASH, str(harness)], check=True, timeout=10)
+    sql = capture.read_text(encoding="utf-8")
+    # The single quote is doubled inside the SQL literal; the double quote
+    # passes through unharmed.
+    assert "IDENTIFIED BY 'p''q\"r'" in sql
+    assert "IDENTIFIED BY 'p'q" not in sql
 
 
 @pytest.mark.parametrize("args,message", [

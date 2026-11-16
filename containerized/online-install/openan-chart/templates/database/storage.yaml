@@ -6,7 +6,10 @@
      by database.storage and the backend descriptor defaults (pvName/
      hostPath/localPath). Note the guard asymmetry: createStorageClass is
      NOT gated on the bundled database — the shared class also serves the
-     registry/orchestration runtime PVs when the database is external. */}}
+     registry/orchestration runtime PVs when the database is external, so
+     its labels are the COMMON labels (workload-name labels would fail for
+     descriptor-less external types); the PV below renders only when
+     bundled and keeps the database workload labels. */}}
 {{- $type := include "openan.dbType" . }}
 {{- $backend := index .Values.database.backends $type }}
 {{- if .Values.database.storage.createStorageClass }}
@@ -15,7 +18,7 @@ kind: StorageClass
 metadata:
   name: {{ .Values.database.storage.storageClassName | default "openan-local" }}
   labels:
-    {{- include "openan.db.labels" . | nindent 4 }}
+    {{- include "openan.labels" . | nindent 4 }}
   {{- if .Values.database.storage.setDefault }}
   annotations:
     storageclass.kubernetes.io/is-default-class: "true"

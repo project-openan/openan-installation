@@ -444,6 +444,15 @@ def test_bundled_mysql_renders_from_descriptor():
     assert "mysqladmin ping" in " ".join(container["readinessProbe"]["exec"]["command"])
     init = docs["ConfigMap/openan-mysql-init"]["data"]["create-databases.sh"]
     assert "CREATE DATABASE IF NOT EXISTS registry_center" in init
+    # Operator passwords may contain single quotes: the bootstrap escapes
+    # them by doubling before interpolating into the SQL literal.
+    assert "${MYSQL_ROOT_PASSWORD//\\'/\\'\\'}" in init
+    assert "IDENTIFIED BY '${ESCAPED_ROOT_PASSWORD}'" in init
+    # The postgres bootstrap carries the same escape for its password literal.
+    pg_docs = render({"database.type": "postgresql"})
+    pg_init = pg_docs["ConfigMap/openan-postgres-init"]["data"]["create-databases.sh"]
+    assert "${POSTGRES_PASSWORD//\\'/\\'\\'}" in pg_init
+    assert "PASSWORD '${ESCAPED_PASSWORD}'" in pg_init
 
 
 def test_installer_emits_unified_database_block():
