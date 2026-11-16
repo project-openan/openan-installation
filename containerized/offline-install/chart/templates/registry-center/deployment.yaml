@@ -49,16 +49,11 @@ spec:
             name: registry-center-config
         env:
         - name: DB_PASSWORD
-          {{- if and (ne (include "openan.dbType" .) "mysql") .Values.postgresql.existingSecret }}
+          {{- if .Values.database.existingSecret }}
           valueFrom:
             secretKeyRef:
-              name: {{ .Values.postgresql.existingSecret }}
-              key: postgres-password
-          {{- else if and (eq (include "openan.dbType" .) "mysql") .Values.mysql.existingSecret }}
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.mysql.existingSecret }}
-              key: mysql-root-password
+              name: {{ .Values.database.existingSecret }}
+              key: {{ include "openan.dbPasswordKey" . }}
           {{- else }}
           valueFrom:
             secretKeyRef:

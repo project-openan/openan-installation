@@ -121,7 +121,7 @@ graph TB
 | ingress-nginx | Installer phase [2/4] or operator | Must have `ingressClassName: nginx` |
 | MetalLB | Installer phase [2/4] or operator | Only needed on bare-metal for LoadBalancer IP |
 | Container images | `ghcr.io/project-openan` (default) | `frontend.image.repository` empty → derived by `frontend.type` |
-| External SQL | Operator-provisioned | MySQL or external PostgreSQL via `database.type` (reviewed values; the wizard is in-cluster only) |
+| External SQL | Operator-provisioned | Any backend the services support via `database.type` (reviewed values; the wizard is in-cluster only) |
 | StorageClass | Operator-provisioned | The wizard falls back to node-pinned local hostPath PVs when none exists |
 
 ---
@@ -516,9 +516,19 @@ All application pods run with:
 
 ### 7.2 Adding a new database backend
 
-The `database.type` field is open (currently `postgresql`|`mysql`). Add the
-new type to `validate.yaml`, add connection logic in the helpers, and update
-the deployment env wiring.
+The type space is **open by design** — the chart enumerates no database
+types as an architectural limit. Any `database.type` other than
+`postgresql` is external SQL: set `database.type`/`host`/`port` (+
+`database.<app>.existingSecret` per service) and the type flows to the
+services verbatim (`PERSISTENCE_MODE` passthrough) with **zero chart
+changes**. The prerequisites are service support (registry-center: file,
+sqlite, postgresql, gauss, mysql; orchestration-center currently: file,
+postgresql, mysql — a service constraint the chart passes through) and an
+explicit `database.port` for unknown types (no default port is known).
+PostgreSQL is simply today's only entry in the bundled set; promoting a
+new backend to bundled follows the offline chart's data-driven pattern
+(`database.backends` descriptor + one generic workload template), not a
+per-type template.
 
 ### 7.3 Adding a new frontend type
 

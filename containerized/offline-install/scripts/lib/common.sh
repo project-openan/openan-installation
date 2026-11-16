@@ -284,6 +284,8 @@ save_config() {
         echo "REGISTRY_CLIENT_SECRET=\"${REGISTRY_CLIENT_SECRET}\""
         echo "PUBLIC_TLS_SECRET=\"${PUBLIC_TLS_SECRET}\""
         echo "DB_TYPE=\"${DB_TYPE}\""
+        echo "DB_HOST=\"${DB_HOST}\""
+        echo "DB_PORT=\"${DB_PORT}\""
         echo "DB_PASSWORD=\"${DB_PASSWORD}\""
         echo "STORAGE_MODE=\"${STORAGE_MODE}\""
         echo "STORAGE_CLASS=\"${STORAGE_CLASS}\""

@@ -24,20 +24,20 @@ Frontend (portal / workflow-designer):
   {{- end }}
 {{- end }}
 
-{{- if and (ne (include "openan.dbType" .) "mysql") .Values.postgresql.enabled }}
+{{- $dbType := include "openan.dbType" . }}
+{{- $dbBackend := index .Values.database.backends $dbType }}
 
-PostgreSQL:
-  Host: openan-postgres
-  Port: {{ .Values.postgresql.port }}
-  Databases: {{ range .Values.postgresql.databases }}{{ .name }} {{ end }}
-{{- end }}
+{{- if $dbBackend }}
 
-{{- if and (eq (include "openan.dbType" .) "mysql") .Values.mysql.enabled }}
+Database (bundled {{ $dbType }}):
+  Host: {{ include "openan.dbHost" . }}
+  Port: {{ include "openan.dbPort" . }}
+  Databases: {{ range .Values.database.databases }}{{ .name }} {{ end }}
+{{- else }}
 
-MySQL:
-  Host: openan-mysql
-  Port: {{ .Values.mysql.port }}
-  Databases: {{ range .Values.mysql.databases }}{{ .name }} {{ end }}
+Database (external {{ $dbType }}):
+  Host: {{ include "openan.dbHost" . }}
+  Port: {{ include "openan.dbPort" . }}
 {{- end }}
 
 Check status:

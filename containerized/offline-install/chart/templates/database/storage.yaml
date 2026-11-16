@@ -1,0 +1,63 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{/* Generic bundled-database storage: StorageClass + node-pinned PV driven
+     by database.storage and the backend descriptor defaults. One template
+     for every backend (pvName/hostPath defaults are data). */}}
+{{- $type := include "openan.dbType" . }}
+{{- $backend := index .Values.database.backends $type }}
+{{- if and $backend .Values.database.storage.createStorageClass }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.database.storage.storageClassName | default "openan-local" }}
+  labels:
+    {{- include "openan.db.labels" . | nindent 4 }}
+  {{- if .Values.database.storage.setDefault }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  {{- end }}
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: {{ .Values.database.storage.reclaimPolicy | default "Retain" }}
+{{- end }}
+---
+{{- if and $backend .Values.database.storage.createPV }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.database.storage.pvName | default $backend.pvName }}
+  labels:
+    {{- include "openan.db.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ .Values.database.storage.size }}
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: {{ .Values.database.storage.reclaimPolicy | default "Retain" }}
+  {{- if .Values.database.storage.storageClassName }}
+  storageClassName: {{ .Values.database.storage.storageClassName }}
+  {{- end }}
+  # Offline: always pin the volume to a node so a multi-node cluster never
+  # schedules the database away from its data.
+  {{- if .Values.database.storage.useHostPath }}
+  hostPath:
+    path: {{ .Values.database.storage.hostPath | default $backend.hostPath }}
+    type: DirectoryOrCreate
+  {{- else }}
+  local:
+    path: {{ .Values.database.storage.localPath | default $backend.localPath }}
+  {{- end }}
+  {{- if .Values.database.storage.nodeName }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - {{ .Values.database.storage.nodeName }}
+  {{- end }}
+{{- end }}

@@ -12,97 +12,115 @@ namespace: openan
 createNamespace: true
 
 # =============================================================================
-# Database selection
+# Database (unified contract — one type flows through every layer)
 # =============================================================================
-# Which database backend the platform uses: postgresql or mysql.
+#   - A type listed in database.backends is BUNDLED: the generic
+#     database/statefulset.yaml + database/storage.yaml templates deploy the
+#     matching in-cluster StatefulSet from the descriptor (data, not code).
+#   - Any other non-empty type (gauss, oracle, ...) is EXTERNAL: no database
+#     workload is rendered; database.host/port/existingSecret are required and
+#     the type reaches the services verbatim (PERSISTENCE_MODE passthrough).
+# The services must support the type (registry-center persistence.conf:
+# file, sqlite, postgresql, gauss, mysql; orchestration-center currently:
+# file, postgresql, mysql — verify before selecting an external type).
 database:
   type: postgresql
-
-# =============================================================================
-# PostgreSQL Configuration (Shared)
-# =============================================================================
-postgresql:
-  # Set to false to use external database
-  enabled: true
-  # External database settings (when enabled=false)
-  externalHost: ""
-  port: 5432
-  # Database credentials
-  # Use existingSecret to reference an existing K8S secret instead of defining password here
+  # External SQL (any type without a backends entry): host + port required.
+  host: ""
+  port: null    # null -> backend default (bundled); explicit for external types
+  # Credential Secret shared by the bundled database and both services.
+  # Keys follow the backend descriptor (postgres-password /
+  # mysql-root-password); external types read database.passwordKey.
   existingSecret: ""
-  password: "openan-db-password"
-  # Image (offline: rewritten to <registry>/library/postgres:15-alpine)
-  image: "postgres:15-alpine"
-  # Storage
+  password: "openan-db-password"  # inline fallback (evaluation only)
+  passwordKey: password           # existingSecret key for external types
+  # Bundled-database storage (operator choices; per-backend pvName/hostPath
+  # defaults live in the backend descriptors).
   storage:
     size: 20Gi
     storageClassName: ""
     createStorageClass: false
     createPV: false
     useHostPath: false
-    hostPath: "/data/openan-postgres"
-    localPath: "/data/openan-postgres"
+    hostPath: ""   # empty -> backend descriptor default
+    localPath: ""  # empty -> backend descriptor default
     nodeName: ""
     reclaimPolicy: "Retain"
     setDefault: false
-    pvName: "openan-postgres-pv"
-  # Resource limits
-  resources:
-    requests:
-      cpu: 250m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  # Database definitions
+    pvName: ""     # empty -> backend descriptor default
+  # Databases created by the bundled init script (name+user per service).
   databases:
     - name: registry_center
       user: registry
     - name: orchestration_center
       user: opena2a_t
-
-# =============================================================================
-# MySQL Configuration (used when database.type=mysql)
-# =============================================================================
-mysql:
-  # Enabled by the installer when database.type=mysql. When enabled=false an
-  # external MySQL (externalHost) is used.
-  enabled: false
-  externalHost: ""
-  port: 3306
-  # Root password of the bundled MySQL instance
-  # Use existingSecret to reference an existing K8S secret instead of defining password here
-  existingSecret: ""
-  password: "openan-db-password"
-  # Image (offline: rewritten to <registry>/library/mysql:8.4.3)
-  image: "mysql:8.4.3"
-  # Storage
-  storage:
-    size: 20Gi
-    storageClassName: ""
-    createStorageClass: false
-    createPV: false
-    useHostPath: false
-    hostPath: "/data/openan-mysql"
-    localPath: "/data/openan-mysql"
-    nodeName: ""
-    reclaimPolicy: "Retain"
-    setDefault: false
-    pvName: "openan-mysql-pv"
-  # Resource limits
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 1000m
-      memory: 1Gi
-  # Database definitions (created by the init script on first boot)
-  databases:
-    - name: registry_center
-      user: registry
-    - name: orchestration_center
-      user: opena2a_t
+  # In-cluster backend descriptors — DATA, not templates. The generic
+  # workload/storage templates render any entry; only the init ConfigMap
+  # (database/init/<type>.yaml, SQL dialect) is per-backend. Adding a
+  # bundled backend = one entry here + one init file.
+  backends:
+    postgresql:
+      name: postgres                  # workload suffix: openan-postgres
+      image: "postgres:15-alpine"     # offline installer rewrites to <REG_HOST>/...
+      port: 5432
+      passwordEnv: POSTGRES_PASSWORD
+      passwordKey: postgres-password
+      env:
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+      args: []
+      readinessProbe:
+        command: [pg_isready, -U, postgres]
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      livenessProbe:
+        command: [pg_isready, -U, postgres]
+        initialDelaySeconds: 15
+        periodSeconds: 30
+      dataVolume:
+        name: postgres-data
+        mountPath: /var/lib/postgresql/data
+      initMountPath: /docker-entrypoint-initdb.d
+      pvName: openan-postgres-pv
+      hostPath: /data/openan-postgres
+      localPath: /data/openan-postgres
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    mysql:
+      name: mysql
+      image: "mysql:8.4.3"
+      port: 3306
+      passwordEnv: MYSQL_ROOT_PASSWORD
+      passwordKey: mysql-root-password
+      env: []
+      args: [--character-set-server, utf8mb4, --collation-server, utf8mb4_unicode_ci]
+      readinessProbe:
+        command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_ROOT_PASSWORD}"']
+        initialDelaySeconds: 10
+        periodSeconds: 10
+      livenessProbe:
+        command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_ROOT_PASSWORD}"']
+        initialDelaySeconds: 30
+        periodSeconds: 30
+      dataVolume:
+        name: mysql-data
+        mountPath: /var/lib/mysql
+      initMountPath: /docker-entrypoint-initdb.d
+      pvName: openan-mysql-pv
+      hostPath: /data/openan-mysql
+      localPath: /data/openan-mysql
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
 
 # =============================================================================
 # Transport security

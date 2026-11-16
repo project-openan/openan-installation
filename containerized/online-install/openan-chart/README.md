@@ -2,7 +2,7 @@
 
 See [HTTP/HTTPS and database deployment contract](../../TRANSPORT_DEPLOYMENT.md) for the current supported configuration, Secret schemas and migration requirements.
 
-- Select SQL type with database.type; postgresql.enabled controls in-cluster hosting, not the application provider.
+- Select SQL type with database.type; postgresql.enabled controls in-cluster hosting, not the application provider. Any non-postgresql type is external SQL that passes through verbatim (PERSISTENCE_MODE) — the services must support it; unknown types need an explicit database.port.
 - Supply runtimeSecret, database credentials and model definitions explicitly. No shared default passwords.
 - HTTP and HTTPS-no-mTLS retain application authentication. TLS, signing and peer verification are independent controls.
 - Supply TLS Secrets created by enterprise PKI or the development certificate tool. Helm auto TLS keys are no longer supported.

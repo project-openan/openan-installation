@@ -71,37 +71,22 @@ app: orchestration-center
 {{- end }}
 
 {{/*
-PostgreSQL labels
+Bundled-database labels (rendered for the active backend only). The label
+values are identical to the historical per-type labels (app:
+openan-postgres / openan-mysql), so selectors stay stable across upgrades.
 */}}
-{{- define "openan.postgres.labels" -}}
+{{- define "openan.db.labels" -}}
 {{ include "openan.labels" . }}
-app: openan-postgres
-app.kubernetes.io/name: openan-postgres
+app: openan-{{ include "openan.dbWorkloadName" . }}
+app.kubernetes.io/name: openan-{{ include "openan.dbWorkloadName" . }}
 app.kubernetes.io/component: database
 {{- end }}
 
 {{/*
-PostgreSQL selector labels
+Bundled-database selector labels
 */}}
-{{- define "openan.postgres.selectorLabels" -}}
-app: openan-postgres
-{{- end }}
-
-{{/*
-MySQL labels
-*/}}
-{{- define "openan.mysql.labels" -}}
-{{ include "openan.labels" . }}
-app: openan-mysql
-app.kubernetes.io/name: openan-mysql
-app.kubernetes.io/component: database
-{{- end }}
-
-{{/*
-MySQL selector labels
-*/}}
-{{- define "openan.mysql.selectorLabels" -}}
-app: openan-mysql
+{{- define "openan.db.selectorLabels" -}}
+app: openan-{{ include "openan.dbWorkloadName" . }}
 {{- end }}
 
 {{/*
@@ -135,17 +120,6 @@ Registry Center URL
 {{- end }}
 
 {{/*
-PostgreSQL host
-*/}}
-{{- define "openan.postgresHost" -}}
-{{- if .Values.postgresql.enabled }}
-{{- "openan-postgres" }}
-{{- else }}
-{{- .Values.postgresql.externalHost }}
-{{- end }}
-{{- end }}
-
-{{/*
 HTTP scheme for in-cluster upstreams, honouring the https switch
 */}}
 {{- define "openan.httpScheme" -}}
@@ -153,45 +127,67 @@ HTTP scheme for in-cluster upstreams, honouring the https switch
 {{- end }}
 
 {{/*
-Selected database type: postgresql (default) or mysql
+Selected database type (verbatim passthrough): a type listed in
+database.backends is bundled; anything else is an external database.
 */}}
 {{- define "openan.dbType" -}}
-{{- $t := .Values.database.type | default "postgresql" -}}
-{{- if not (or (eq $t "postgresql") (eq $t "mysql")) -}}
-{{- fail (printf "database.type must be \"postgresql\" or \"mysql\", got %q" $t) -}}
-{{- end -}}
-{{- $t -}}
+{{- .Values.database.type | default "postgresql" -}}
 {{- end }}
 
 {{/*
-Database host, honouring database.type
+Workload name of the active bundled backend (openan-<name>); fails for
+external types because they deploy no database workload.
+*/}}
+{{- define "openan.dbWorkloadName" -}}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if $backend -}}
+{{- $backend.name -}}
+{{- else -}}
+{{- fail (printf "database.type '%s' has no bundled backend descriptor (external databases deploy no workload)" (include "openan.dbType" .)) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Database host: the bundled backend Service, or the external database.host.
 */}}
 {{- define "openan.dbHost" -}}
-{{- $host := "" -}}
-{{- if eq (include "openan.dbType" .) "mysql" -}}
-{{- if .Values.mysql.enabled -}}
-{{- $host = "openan-mysql" -}}
+{{- $type := include "openan.dbType" . -}}
+{{- $backend := index .Values.database.backends $type -}}
+{{- if $backend -}}
+{{- printf "openan-%s" $backend.name -}}
 {{- else -}}
-{{- $host = .Values.mysql.externalHost -}}
+{{- $bundled := keys .Values.database.backends | sortAlpha | join ", " -}}
+{{- required (printf "database.type '%s' is not a bundled backend (bundled: %s); set database.host for an external database" $type $bundled) .Values.database.host -}}
 {{- end -}}
-{{- else -}}
-{{- $host = include "openan.postgresHost" . -}}
-{{- end -}}
-{{- if not $host -}}
-{{- fail "database host is empty: enable the bundled database or set externalHost" -}}
-{{- end -}}
-{{- $host -}}
 {{- end }}
 
 {{/*
-Database port, honouring database.type
+Database port: explicit database.port or the backend default (bundled);
+external types must set database.port explicitly (no default is known).
 */}}
 {{- define "openan.dbPort" -}}
-{{- if eq (include "openan.dbType" .) "mysql" }}
-{{- .Values.mysql.port }}
-{{- else }}
-{{- .Values.postgresql.port }}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if $backend -}}
+{{- .Values.database.port | default $backend.port -}}
+{{- else -}}
+{{- if eq (toString .Values.database.port) "<nil>" -}}
+{{- fail (printf "database.type '%s' is external: set database.port (no default port is known for it)" (include "openan.dbType" .)) -}}
+{{- end -}}
+{{- .Values.database.port -}}
+{{- end -}}
 {{- end }}
+
+{{/*
+Credential Secret key for the application DB_PASSWORD: the backend
+descriptor key (bundled) or database.passwordKey (external).
+*/}}
+{{- define "openan.dbPasswordKey" -}}
+{{- $backend := index .Values.database.backends (include "openan.dbType" .) -}}
+{{- if $backend -}}
+{{- $backend.passwordKey -}}
+{{- else -}}
+{{- default "password" .Values.database.passwordKey -}}
+{{- end -}}
 {{- end }}
 
 {{/*

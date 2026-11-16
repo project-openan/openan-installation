@@ -269,7 +269,7 @@ check_k8s() {
     case "$DB_TYPE" in
         mysql)      need_image_tar "mysql-8-4-3";;
         postgresql) need_image_tar "postgres-15-alpine";;
-        *)          fail "invalid DB_TYPE: $DB_TYPE (use postgresql|mysql)";;
+        *)          warn "external DB_TYPE '${DB_TYPE}' — no bundled database image needed (host/port are on you)";;
     esac
     need_image_tar "ingress-nginx-controller"
     if [ "$INSTALL_METALLB" = "true" ]; then
