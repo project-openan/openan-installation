@@ -37,14 +37,28 @@ def _kubectl_json(args, stdin=None):
     return subprocess.run(["kubectl", *args], input=stdin, capture_output=True, text=True)
 
 
+# Objects the wizard creates carry this label; a re-run adopts them
+# (recovering from an interrupted run) while operator-created objects with
+# the same name still fail fast — the offline installer's Secret contract.
+WIZARD_LABEL = "openan-online-installer"
+
+
 def create_secret(namespace, name, values):
     result = _kubectl_json(["get", "secret", name, "-n", namespace, "--ignore-not-found", "-o", "name"])
     if result.returncode:
         raise RuntimeError(f"Could not check Secret '{name}' in namespace '{namespace}'; verify kubeconfig and RBAC")
     if result.stdout.strip():
+        owned = _kubectl_json(["get", "secret", name, "-n", namespace,
+                               "-o", f"jsonpath={{.metadata.labels.{WIZARD_LABEL}}}"])
+        if owned.returncode == 0 and owned.stdout.strip() == "true":
+            print(f"  [INFO] Secret '{name}' from a previous wizard run found — reusing the "
+                  f"previous values; entries made this run are NOT applied "
+                  f"(delete the Secret first to set new credentials)")
+            return
         raise RuntimeError(f"Secret '{name}' already exists; use reviewed values for upgrades instead of overwriting")
     document = {"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
-                "metadata": {"namespace": namespace, "name": name},
+                "metadata": {"namespace": namespace, "name": name,
+                             "labels": {WIZARD_LABEL: "true"}},
                 "data": {key: base64.b64encode(value.encode()).decode() for key, value in values.items()}}
     result = _kubectl_json(["create", "-f", "-"], stdin=json.dumps(document))
     if result.returncode:
@@ -57,9 +71,17 @@ def create_configmap(namespace, name, data):
     if result.returncode:
         raise RuntimeError(f"Could not check ConfigMap '{name}' in namespace '{namespace}'; verify kubeconfig and RBAC")
     if result.stdout.strip():
+        owned = _kubectl_json(["get", "configmap", name, "-n", namespace,
+                               "-o", f"jsonpath={{.metadata.labels.{WIZARD_LABEL}}}"])
+        if owned.returncode == 0 and owned.stdout.strip() == "true":
+            print(f"  [INFO] ConfigMap '{name}' from a previous wizard run found — reusing the "
+                  f"previous content; entries made this run are NOT applied "
+                  f"(delete the ConfigMap first to regenerate it)")
+            return
         raise RuntimeError(f"ConfigMap '{name}' already exists; use existing references for upgrades")
     document = {"apiVersion": "v1", "kind": "ConfigMap",
-                "metadata": {"namespace": namespace, "name": name},
+                "metadata": {"namespace": namespace, "name": name,
+                             "labels": {WIZARD_LABEL: "true"}},
                 "data": data}
     result = _kubectl_json(["create", "-f", "-"], stdin=json.dumps(document))
     if result.returncode:

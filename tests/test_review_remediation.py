@@ -185,6 +185,7 @@ def test_wizard_secret_only_uses_stdin_and_sanitizes_errors(monkeypatch):
 
 
 def test_wizard_never_overwrites_an_existing_secret(monkeypatch):
+    # An operator-created Secret (no wizard label) must never be touched.
     module = wizard()
     calls = []
     def run(command, **kwargs):
@@ -193,7 +194,40 @@ def test_wizard_never_overwrites_an_existing_secret(monkeypatch):
     monkeypatch.setattr(module.subprocess, "run", run)
     with pytest.raises(RuntimeError):
         module.create_secret("openan", "runtime", {"password": "canary-secret"})
-    assert len(calls) == 1
+    # exists-check + label-check only; no create was ever submitted
+    assert len(calls) == 2 and not any("create" in " ".join(map(str, c)) for c in calls)
+
+
+def test_wizard_rerun_reuses_its_own_secrets_and_configmaps(monkeypatch, capsys):
+    # A leftover from an interrupted wizard run must not dead-end the re-run:
+    # wizard-labelled objects are adopted (idempotent re-run), never
+    # re-created — the same contract as the offline installer's labelled
+    # Secrets. Recovery from a midway crash is simply "run the wizard again".
+    module = wizard()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        argv = " ".join(map(str, command))
+        if "jsonpath" in argv:
+            # label check: the object carries the wizard label
+            return subprocess.CompletedProcess(command, 0, "true\n", "")
+        if "get secret" in argv:
+            return subprocess.CompletedProcess(command, 0, "secret/openan-pg\n", "")
+        if "get configmap" in argv:
+            return subprocess.CompletedProcess(command, 0, "configmap/openan-rc-models\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    module.create_secret("openan", "openan-pg", {"postgres-password": "canary-secret"})
+    module.create_configmap("openan", "openan-rc-models", {"models.yaml": "..."})
+    # exists-check + label-check per object; no create submitted, no values echoed
+    assert len(calls) == 4 and not any("create" in " ".join(map(str, c)) for c in calls)
+    captured = capsys.readouterr().out
+    assert "canary-secret" not in captured
+    # The reuse notice must be explicit that this run's entries do not apply
+    assert "NOT applied" in captured
+    assert "reusing the previous" in captured
 
 
 def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
