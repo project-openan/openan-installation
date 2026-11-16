@@ -612,6 +612,9 @@ def configure(namespace, release, output, tag=None):
     # --- HTTPS (optional, self-signed) ---------------------------------------
     https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "yes")
     https_config = {}
+    # Public ingress hostname: signed into the cert SAN (gen_certs.py) and
+    # required non-empty by validate.yaml when ingress TLS is enabled.
+    ingress_host = "openan.test"
     if https_enabled == "yes":
         # Generate self-signed certificates with the standalone gen_certs.py
         # tool (cryptography library only; no source-tree dependency). The
@@ -628,6 +631,7 @@ def configure(namespace, release, output, tag=None):
             sys.executable, str(gen_script),
             "--out", str(cert_dir),
             "--namespace", namespace,
+            "--ingress-host", ingress_host,
         ]
         # Discover the LoadBalancer IP for the ingress SAN, if already assigned.
         lb_ip = subprocess.run(
@@ -678,7 +682,9 @@ def configure(namespace, release, output, tag=None):
     if components["orchestration"]:
         frontend_values["type"] = frontend_type or "workflow-designer"
     if https_enabled == "yes":
-        frontend_values.update(https_config.get("backendTls", {}))
+        # Chart contract (values.yaml/validate.yaml): nested under
+        # frontend.backendTls.{verifyServer,existingSecret} — NOT flat keys.
+        frontend_values["backendTls"] = https_config["backendTls"]
     database_values = {"bundled": db_bundled, "type": db_type}
     if db_bundled:
         database_values["existingSecret"] = prefix + (backends.get(db_type, {}).get("credentialSecretSuffix") or db_type)
@@ -736,7 +742,9 @@ def configure(namespace, release, output, tag=None):
     else:
         values["orchestration"] = {"enabled": False}
         values["frontend"] = {"enabled": False, "image": {"tag": tags["frontend"]}}
-    values["ingress"] = {"host": ""}
+    # HTTP: empty catch-all host (direct LB-IP access). HTTPS: must match the
+    # SAN signed into the public cert — gen_certs.py --ingress-host above.
+    values["ingress"] = {"host": ingress_host if https_enabled == "yes" else ""}
     if https_enabled == "yes":
         values["ingress"]["tls"] = {"enabled": True, "secretName": prefix + "public-tls"}
 

@@ -290,6 +290,62 @@ def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
     assert saved["openan-public-tls"]["tls.crt"] == "public-crt"
 
 
+def test_wizard_https_values_match_the_chart_contract(tmp_path, monkeypatch):
+    # The HTTPS wizard values must match what validate.yaml enforces, or the
+    # deploy phase dies after all Secrets were already created:
+    #   1. frontend.backendTls nested — the flat frontend.verifyServer /
+    #      frontend.existingSecret shape fails validate.yaml:69 with
+    #      "frontend HTTPS verification/mTLS requires frontend.backendTls.existingSecret";
+    #   2. a non-empty ingress.host matching the SAN gen_certs.py signs
+    #      ("--ingress-host"), or validate.yaml fails with
+    #      "ingress TLS requires ingress.host matching the certificate".
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "yes"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
+    gen_calls = []
+
+    def fake_run(command, **kwargs):
+        argv = [str(part) for part in command]
+        if any(part.endswith("gen_certs.py") for part in argv):
+            gen_calls.append(argv)
+            out = Path(argv[argv.index("--out") + 1])
+            for service in ("registry-center", "orchestration-center"):
+                (out / service).mkdir(parents=True, exist_ok=True)
+                for key in ("server.cer", "server_key.pem", "cert_pwd", "trust.cer"):
+                    (out / service / key).write_text("cert-material", encoding="utf-8")
+            for sub in ("ingress-client", "ca", "ingress"):
+                (out / sub).mkdir(parents=True, exist_ok=True)
+            (out / "ingress-client" / "tls.crt").write_text("client-crt", encoding="utf-8")
+            (out / "ingress-client" / "tls.key").write_text("client-key", encoding="utf-8")
+            (out / "ca" / "ca.cer").write_text("ca-cer", encoding="utf-8")
+            (out / "ingress" / "tls.crt").write_text("public-crt", encoding="utf-8")
+            (out / "ingress" / "tls.key").write_text("public-key", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    # 1. backendTls nested under frontend, no flat leftovers
+    assert values["frontend"]["backendTls"] == {"verifyServer": True,
+                                               "existingSecret": "openan-ingress-client"}
+    assert "verifyServer" not in values["frontend"]
+    assert "existingSecret" not in values["frontend"]
+    # 2. ingress host matches the SAN the wizard asks gen_certs.py to sign
+    assert values["ingress"]["host"] == "openan.test"
+    assert values["ingress"]["tls"] == {"enabled": True, "secretName": "openan-public-tls"}
+    idx = gen_calls[0].index("--ingress-host")
+    assert gen_calls[0][idx + 1] == "openan.test"
+
+
 def test_wizard_generated_values_contain_references_not_credentials(tmp_path, monkeypatch):
     module = wizard()
     # Interaction: components=all, tags, frontend, LLM=skip, signing=auto
