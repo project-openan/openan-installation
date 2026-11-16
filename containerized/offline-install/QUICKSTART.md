@@ -65,7 +65,9 @@ your `REGISTRY_NODE_IP`. `check-env.sh` verifies this per node.
 **2. A MetalLB address pool** (bare-metal clusters,
 [§2.3](docs/DEPENDENCIES.md#23-metallb-address-pool)) — a range of routable,
 currently-unused IPs on your LAN, e.g. `192.168.1.200-192.168.1.250`. Goes into
-`METALLB_POOL` in `config.env`.
+`METALLB_POOL` in `config.env`. No allocatable pool? Skip MetalLB entirely and
+share an existing node's IP through the ingress — see
+[No MetalLB: ingress-nginx + NodePort single entry](#no-metallb-ingress-nginx--nodeport-single-entry-no-dedicated-ip).
 
 **3. Storage** ([§2.4](docs/DEPENDENCIES.md#24-storage)) — either a default
 StorageClass exists, or the installer falls back to a node-pinned hostPath PV
@@ -195,6 +197,32 @@ fallback (`http://<node-ip>:<nodePort>/`).
 > An alternative entry — an external load balancer targeting a **fixed node IP
 > and NodePorts** (no MetalLB, no virtual IP) — is described in
 > [the next section](#alternative-entry-external-load-balancer-on-a-fixed-node-ip-no-metallb).
+
+## No MetalLB: ingress-nginx + NodePort single entry (no dedicated IP)
+
+Without an allocatable IP range (quick testing, internal development), skip
+MetalLB and share an existing node's IP through the ingress: every service
+stays ClusterIP, all traffic enters the single ingress-nginx edge on fixed
+NodePorts and is routed by path to the backends.
+
+```bash
+# 1) Expose the ingress entry on fixed NodePorts (any node forwards)
+kubectl -n ingress-nginx patch svc ingress-nginx-controller --type json -p '[
+  {"op":"replace","path":"/spec/type","value":"NodePort"},
+  {"op":"add","path":"/spec/ports/0/nodePort","value":30080},
+  {"op":"add","path":"/spec/ports/1/nodePort","value":30443},
+  {"op":"replace","path":"/spec/externalTrafficPolicy","value":"Cluster"}]'
+
+# 2) Firewall: open 30080/tcp (and 30443/tcp for the public-TLS entry)
+
+# 3) Access — any node IP works:
+#    http://<node-IP>:30080/          (portal, /registry, /api/orchestrate)
+```
+
+Pick free ports inside the API server's `--service-node-port-range`
+(30500 is the in-cluster registry — avoid it). For source-IP fidelity or
+an external-LB entry, see the next section. When no routable pool exists,
+prefer this recipe or the NodePort fallback over forcing MetalLB L2 mode.
 
 ## Alternative entry: external load balancer on a fixed node IP (no MetalLB)
 

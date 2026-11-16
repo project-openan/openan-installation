@@ -103,7 +103,10 @@ METALLB_POOL="192.168.1.200-192.168.1.250"
 ```
 
 The range must not contain any node IP, and your switches/router must be able to
-reach the chosen VIP (L2 mode: the VIP lives on one node at a time).
+reach the chosen VIP (L2 mode: the VIP lives on one node at a time). No
+allocatable range? Skip MetalLB entirely (`INSTALL_METALLB="false"`) and share
+an existing node's IP through ingress-nginx + fixed NodePorts — see
+QUICKSTART.md, "No MetalLB: ingress-nginx + NodePort single entry".
 
 ### 2.4 Storage
 
