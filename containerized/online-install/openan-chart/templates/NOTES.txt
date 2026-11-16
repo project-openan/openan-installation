@@ -24,12 +24,19 @@ Frontend (portal / workflow-designer):
   {{- end }}
 {{- end }}
 
-{{- if .Values.postgresql.enabled }}
+{{- $dbBackend := index .Values.database.backends (.Values.database.type | default "postgresql") }}
 
-PostgreSQL:
-  Host: openan-postgres
-  Port: {{ .Values.postgresql.port }}
-  Databases: {{ range .Values.postgresql.databases }}{{ .name }} {{ end }}
+{{- if and $dbBackend .Values.database.bundled }}
+
+Database (bundled {{ .Values.database.type | default "postgresql" }}):
+  Host: {{ include "openan.databaseHost" . }}
+  Port: {{ include "openan.databasePort" . }}
+  Databases: {{ range .Values.database.databases }}{{ .name }} {{ end }}
+{{- else if .Values.database.host }}
+
+Database (external {{ .Values.database.type }}):
+  Host: {{ include "openan.databaseHost" . }}
+  Port: {{ include "openan.databasePort" . }}
 {{- end }}
 
 Check status:

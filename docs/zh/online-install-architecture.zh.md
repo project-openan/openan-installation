@@ -62,8 +62,8 @@ graph TB
             end
 
             subgraph "数据库"
-                PG[(openan-postgres<br/>StatefulSet)]
-                EXT_DB[外部 MySQL/PostgreSQL]
+                PG[(openan-postgres / openan-mysql<br/>StatefulSet, descriptor-driven)]
+                EXT_DB[外部 SQL<br/>服务支持的任意类型]
             end
 
             subgraph "Secrets 与配置"
@@ -94,10 +94,10 @@ graph TB
 | 编排中心 | Deployment | `orchestration-center` | 1 副本（进程内会话）；Recreate 策略 |
 | 前端（portal） | Deployment | `openan-frontend` | 默认 2 副本；HPA（Horizontal Pod Autoscaler，水平 Pod 自动扩缩）启用 |
 | 前端（designer） | Deployment | `openan-frontend` | 默认 2 副本；HPA 启用；chart 管理 nginx |
-| PostgreSQL | StatefulSet | `openan-postgres` | 仅当 `postgresql.enabled=true` |
+| 内置数据库（postgresql/mysql） | StatefulSet | `openan-postgres` / `openan-mysql` | 当 `database.bundled=true` 且类型有 `database.backends` 描述符 |
 | RC 运行时 PVC | PVC | `registry-center-runtime` | `helm.sh/resource-policy: keep` |
 | OC 运行时 PVC | PVC | `orchestration-center-runtime` | `helm.sh/resource-policy: keep` |
-| 本地 PV（回退） | PV | `openan-postgres-pv`、`openan-rc-pv`、`openan-oc-pv` | 仅当设置 `createPV`；节点固定 hostPath/local，单节点评估 |
+| 本地 PV（回退） | PV | `openan-postgres-pv`/`openan-mysql-pv`、`openan-rc-pv`、`openan-oc-pv` | 仅当设置 `createPV`；节点固定 hostPath/local，单节点评估 |
 | 前端 Ingress | Ingress | `openan-frontend-ingress` | 路径 `/` |
 | 编排 Ingress | Ingress | `openan-orchestration-ingress` | 路径 `/api/orchestrate(/|$)(.*)` → rewrite |
 | 注册 Ingress | Ingress | `openan-registry-ingress` | 路径 `/registry`、`/api/registry` → rewrite |
@@ -169,13 +169,13 @@ graph TB
 
 **开关的设计理由**：portal使用完全不同的构建流水线（npm → 静态资源 → nginx），独立构建与发布（`containerized/build/portal/`）。chart只需知道容器端口与环境变量契约 —— 其余归镜像负责。`repository` 为空时 `openan.frontendImageRepository` helper按类型派生镜像，保持values精简。
 
-### 3.4 PostgreSQL（StatefulSet）
+### 3.4 内置数据库（StatefulSet，描述符驱动）
 
-仅在 `postgresql.enabled=true` 且 `database.type=postgresql` 时渲染。
+当 `database.bundled=true` 且 `database.type` 有 `database.backends` 描述符（postgresql、mysql —— 类型空间开放：新增内置后端 = 1 条描述项 + 1 个init文件，零模板改动）时，由**通用** `database/statefulset.yaml` + `database/storage.yaml` 模板渲染。描述符数据（镜像、端口、密码env/key、含 `{port}` 占位符的探针、卷、PV默认值）驱动渲染；工作负载名、标签与PV名与历史per-type模板完全一致，release升级selector兼容。
 
-- 通过init脚本创建两个数据库/用户（`postgresql.databases` 列表）。
-- 集群内模式下两个应用共享 `postgres-password`；集群内PG拒绝按应用 `existingSecret`（validate.yaml:76）。
-- 存储：默认StorageClass，或显式 `storageClassName`，或 `-`（无类）。没有任何StorageClass时，`postgresql.storage.createStorageClass` + `createPV`/`useHostPath`/`nodeName` 创建共享的 `openan-local` 类与节点固定PV（单节点评估；向导自动启用）。
+- init ConfigMap（`database/init/<type>.yaml`）按共享 `database.databases` 列表创建数据库/用户（按应用的 name/user 必须匹配列表项；validate拒绝不匹配）。
+- 两个应用读取共享 `database.existingSecret` + 后端 `passwordKey`（postgres-password / mysql-root-password）；内置模式拒绝按应用 `existingSecret`——那是外部SQL的契约。
+- 存储：默认StorageClass，或显式 `storageClassName`，或 `-`（无类）。没有任何StorageClass时，`database.storage.createStorageClass` + `createPV`/`useHostPath`/`nodeName` 创建共享的 `openan-local` 类与节点固定PV（单节点评估；向导自动启用——`createStorageClass` 在数据库为外部SQL时也服务于RC/OC运行时PV）。
 
 ### 3.5 运行时PVC（`runtime-pvc.yaml`）
 
@@ -289,8 +289,8 @@ Portal **绝不**由安装器从源码构建 —— 从registry拉取。专用po
 ```yaml
 namespace: string            # 必须与 helm --namespace 一致（受校验）
 createNamespace: boolean
-postgresql: {...}           # 集群内 PG（可选）
-database: {...}             # SQL 类型/主机/端口 + 每应用 db/user/secret
+database: {...}             # bundled 标志 + 类型 + host/port + 每应用 db/user/secret
+                             # + storage + 共享 databases 列表 + backends 描述符
 registry: {...}             # RC：镜像、端口、副本数、llm、tls、signing、persistence
 orchestration: {...}        # OC：镜像、端口、副本数、llm、tls、persistence
 frontend: {...}             # type、image、port、nodePort、nginxConfig、backendTls
@@ -303,7 +303,7 @@ chart **从不生成凭证**。每个secret都是对既有Kubernetes Secret的�
 
 | Secret | 键 | 被引用方 |
 |--------|--------|---------------|
-| `postgresql.existingSecret` | `postgres-password` | RC/OC DB_PASSWORD（集群内 PG） |
+| `database.existingSecret` | 后端 `passwordKey`（postgres-password / mysql-root-password） | 内置引导 + RC/OC DB_PASSWORD |
 | `database.<app>.existingSecret` | `db-password`（或 `passwordKey`） | 每应用 DB_PASSWORD（外部 SQL） |
 | `registry.runtimeSecret` | 环境变量（整包 envFrom） | RC Pod |
 | `registry.credentialSecret` | `integration_credentials.conf` | RC Pod（挂载文件） |
@@ -327,14 +327,16 @@ chart **从不生成凭证**。每个secret都是对既有Kubernetes Secret的�
 `validate.yaml` 模板是 **fail-fast契约强制器**，在 `helm template/lint/install` 时运行。它拒绝：
 
 - 缺失镜像tag（无默认tag —— 强制显式固定版本）
-- MySQL与 `postgresql.enabled=true` 并存（矛盾）
+- `database.bundled=true` 但类型无 `database.backends` 描述符（拼写防护：报错并列出内置名单）
+- 内置数据库缺少 `database.existingSecret`（无默认凭证）
+- 外部SQL缺host/port或缺少每服务凭证；无描述符的外部类型必须显式端口
+- 内置模式搭配每服务 `existingSecret`（外部专属契约），或按应用 name/user 不匹配 `database.databases` 条目
 - RC/OC使用相同的外部数据库名
 - RC/OC缺少 `runtimeSecret`
 - `verifyClient=true` 但未启用TLS
 - workflow-designer搭配OC TLS且 `backendTls.verifyServer`/`verifyClient` 时必须有 `backendTls.existingSecret`；portal类型不受此约束（portal无上游校验能力，属文档化限制）
 - RC副本数 > 1（进程内事件）
 - OC副本数 > 1或启用HPA（进程内会话）
-- 集群内PG搭配按应用 `existingSecret`（集群内使用单一共享密码）
 - `persistence.createPV` 缺少匹配的 `storageClassName`，或本地（非hostPath）PV缺少 `nodeName`（PV与PVC将无法绑定）
 - 遮蔽托管设置的重复 `extraEnv` 键
 - 遮蔽其他服务或SQL主机的探针主机配置
@@ -429,7 +431,10 @@ registry-center为每个AgentCard加JWS签名。签名材料独立于TLS：
 
 ### 7.2 新增数据库后端
 
-类型空间**设计上是开放的** —— chart不把任何数据库类型枚举为架构边界。除 `postgresql` 外的任何 `database.type` 均按外部SQL处理：设置 `database.type`/`host`/`port`（+ 每服务 `database.<app>.existingSecret`），类型原样透传给服务（`PERSISTENCE_MODE` 直通），**零chart改动**。前置条件是服务侧支持（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql —— 这是chart透传的服务约束而非chart施加的限制），且未知类型必须显式设置 `database.port`（无默认端口）。PostgreSQL只是当前内置集合中的唯一条目；将新后端提升为内置遵循offline chart的数据驱动模式（`database.backends` 描述符 + 单一通用工作负载模板），而非per-type模板。
+类型空间**设计上是开放的** —— chart不把任何数据库类型枚举为架构边界。两条扩展路径均为数据驱动：
+
+- **外部SQL**（`database.bundled=false`）：设置 `database.type`/`host`/`port`（+ 每服务 `database.<app>.existingSecret`），类型原样透传给服务（`PERSISTENCE_MODE` 直通），**零chart改动**。前置条件是服务侧支持（registry-center：file、sqlite、postgresql、gauss、mysql；orchestration-center 当前：file、postgresql、mysql —— 这是chart透传的服务约束而非chart施加的限制），且无描述符的类型必须显式设置 `database.port`。
+- **内置**（`database.bundled=true`）：加**1 条 `database.backends` 描述项**（镜像、端口、密码env/key、含 `{port}` 占位符的探针、卷、`credentialSecretSuffix`）+ **1 个init ConfigMap**（`database/init/<type>.yaml`，引导SQL方言）。通用工作负载/存储模板负责渲染，校验跟随描述符键，向导的后端菜单自动收录 —— 模板、校验器与向导零改动。
 
 ### 7.3 新增前端类型
 

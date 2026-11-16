@@ -17,7 +17,7 @@ BASH = os.environ.get("BASH_BIN") or shutil.which("bash")
 CHART = ROOT / "containerized/online-install/openan-chart"
 BASE = {"registry.image.tag": "contract", "orchestration.image.tag": "contract",
         "frontend.type": "workflow-designer", "frontend.image.tag": "contract",
-        "postgresql.existingSecret": "postgres-secret", "registry.runtimeSecret": "rc-runtime",
+        "database.existingSecret": "postgres-secret", "registry.runtimeSecret": "rc-runtime",
         "registry.credentialSecret": "rc-credentials", "orchestration.runtimeSecret": "oc-runtime",
         "registry.signing.mode": "off"}
 
@@ -48,7 +48,7 @@ def render(settings=None, success=True):
 def test_database_and_protocol_matrix(protocol, db):
     settings = {}
     if db == "mysql":
-        settings.update({"database.type": "mysql", "postgresql.enabled": False, "database.host": "mysql.example",
+        settings.update({"database.type": "mysql", "database.bundled": False, "database.host": "mysql.example",
                          "database.registry.existingSecret": "rc-db", "database.orchestration.existingSecret": "oc-db"})
     if protocol == "https":
         settings.update({"registry.tls.enabled": True, "registry.tls.existingSecret": "rc-tls",
@@ -120,7 +120,7 @@ def test_probe_timeout_seconds_exceeds_healthcheck_time(name):
 
 
 @pytest.mark.parametrize("invalid,message", [
-    ({"database.type": "mysql"}, "postgresql.enabled=false"),
+    ({"database.type": "gauss"}, "database.backends entry"),
     ({"registry.tls.verifyClient": True}, "requires HTTPS"),
     ({"registry.tls.enabled": True}, "requires tls.mode=secret"),
     ({"registry.runtimeSecret": ""}, "runtimeSecret is required"),
@@ -257,11 +257,11 @@ def test_local_storage_fallback_creates_node_pinned_pvs():
     # Clusters without a StorageClass leave every claim Pending; the wizard's
     # fallback must provide PVs for ALL workloads (postgres, registry,
     # orchestration), not just postgres.
-    settings = {"postgresql.storage.createStorageClass": True,
-                "postgresql.storage.storageClassName": "openan-local",
-                "postgresql.storage.createPV": True,
-                "postgresql.storage.useHostPath": True,
-                "postgresql.storage.nodeName": "node-a",
+    settings = {"database.storage.createStorageClass": True,
+                "database.storage.storageClassName": "openan-local",
+                "database.storage.createPV": True,
+                "database.storage.useHostPath": True,
+                "database.storage.nodeName": "node-a",
                 "registry.persistence.storageClassName": "openan-local",
                 "registry.persistence.createPV": True,
                 "registry.persistence.nodeName": "node-a",
@@ -293,9 +293,9 @@ def test_local_pv_fallback_requires_storage_class_then_node(component):
     render(settings)  # complete fallback triple renders
 
 
-def test_postgres_local_pv_requires_node_name():
-    settings = {"postgresql.storage.createPV": True, "postgresql.storage.useHostPath": False}
-    assert "postgresql.storage local PV requires nodeName" in render(settings, success=False)
+def test_database_local_pv_requires_node_name():
+    settings = {"database.storage.createPV": True, "database.storage.useHostPath": False}
+    assert "database.storage local PV requires nodeName" in render(settings, success=False)
 
 
 def test_disabled_registry_has_no_runtime_claim_or_replica_guard():
@@ -397,12 +397,36 @@ def test_external_full_model_config_accepts_custom_provider():
     assert next(v for v in volumes if v["name"] == "models")["configMap"]["name"] == "full-models"
 
 
-def test_internal_postgres_custom_port_is_used_by_server_and_probe():
-    docs = render({"postgresql.port": 5544})
+def test_bundled_database_custom_port_is_used_by_server_probe_and_services():
+    # database.port overrides the backend descriptor default everywhere:
+    # listener args, probes and both services' DB_PORT (one key, one truth —
+    # the historical postgresql.port/database.port split is gone).
+    docs = render({"database.port": 5544})
     container = docs["openan-postgres"]["spec"]["template"]["spec"]["containers"][0]
     assert container["args"] == ["-p", "5544"]
     assert container["readinessProbe"]["exec"]["command"][-2:] == ["-p", "5544"]
     assert docs["registry-center-config"]["data"]["DB_PORT"] == "5544"
+    assert docs["orchestration-center-config"]["data"]["DB_PORT"] == "5544"
+
+
+def test_bundled_mysql_renders_from_descriptor():
+    # The generic database templates render the mysql descriptor: same
+    # workload names, env, probes and init dialect as the historical
+    # per-type templates; "{port}" placeholders substitute the descriptor
+    # port (3306 here — args stay empty).
+    docs = render({"database.type": "mysql"})
+    container = docs["openan-mysql"]["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == "mysql:8.4.3"
+    env = {e["name"]: e for e in container["env"]}
+    assert env["MYSQL_ROOT_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "postgres-secret", "key": "mysql-root-password"}
+    assert "mysqladmin ping" in " ".join(container["readinessProbe"]["exec"]["command"])
+    assert container.get("args", []) == []
+    init = docs["openan-mysql-init"]["data"]["create-databases.sh"]
+    assert "CREATE DATABASE IF NOT EXISTS registry_center" in init
+    assert docs["registry-center-config"]["data"]["PERSISTENCE_MODE"] == "mysql"
+    assert docs["registry-center-config"]["data"]["DB_PORT"] == "3306"
+    assert docs["registry-center-config"]["data"]["DB_HOST"] == "openan-mysql"
 
 
 @pytest.mark.parametrize("args,message", [

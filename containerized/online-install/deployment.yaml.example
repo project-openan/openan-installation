@@ -3,10 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Non-secret external MySQL + HTTPS-no-mTLS; create all references first.
 namespace: openan
-postgresql:
-  enabled: false
 database:
   type: mysql
+  bundled: false
   host: mysql.example.internal
   port: 3306
   registry:

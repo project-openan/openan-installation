@@ -79,9 +79,9 @@ spec:
               {{- if (index .Values.database "orchestration").existingSecret }}
               name: {{ (index .Values.database "orchestration").existingSecret }}
               key: {{ (index .Values.database "orchestration").passwordKey }}
-              {{- else if .Values.postgresql.existingSecret }}
-              name: {{ .Values.postgresql.existingSecret }}
-              key: postgres-password
+              {{- else if .Values.database.existingSecret }}
+              name: {{ .Values.database.existingSecret }}
+              key: {{ include "openan.dbPasswordKey" . }}
               {{- else }}
               name: orchestration-center-secret
               key: db-password

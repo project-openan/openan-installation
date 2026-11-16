@@ -33,11 +33,14 @@ Without --values the installer is interactive and runs four guided phases
                         kubectl/helm can be auto-installed on request (official
                         installers; python3 and Docker Desktop stay manual)
   [2/4] infrastructure  MetalLB + ingress-nginx (pinned, skipped when present)
-  [3/4] application     guided wizard: components, image tag(s), models, signing, admin
-                        password; SQL, storage and hostname are automatic
-                        (in-cluster PostgreSQL, default StorageClass or local
-                        hostPath fallback, catch-all host; use reviewed values
-                        for external SQL, HTTPS and host-based routing)
+  [3/4] application     guided wizard: components, image tag(s), database, models,
+                        signing, admin password; SQL hosting is asked (in-cluster
+                        backend menu from the chart's database.backends data, or
+                        external SQL with type/host/port — the services must
+                        support the type); storage and hostname are automatic
+                        (default StorageClass or local hostPath fallback,
+                        catch-all host; use reviewed values for HTTPS and
+                        host-based routing)
   [4/4] deploy          deployment summary + confirmation, helm upgrade --install,
                         optional agent examples server (interactive offer when
                         orchestration is deployed), access summary
@@ -536,6 +539,10 @@ while read -r key value; do
         models_rc) MODELS_RC="$value" ;;
         models_oc) MODELS_OC="$value" ;;
         pg_secret) PG_SECRET="$value" ;;
+        db_bundled) DB_BUNDLED="$value" ;;
+        db_type) DB_TYPE="$value" ;;
+        db_host) DB_HOST="$value" ;;
+        db_port) DB_PORT="$value" ;;
         storage_node) STORAGE_NODE="$value" ;;
     esac
 done < <(python3 - "$VALUES" <<'PY'
@@ -552,8 +559,13 @@ for comp in ("registry", "orchestration", "frontend"):
 print("signing", ((values.get("registry") or {}).get("signing") or {}).get("mode") or "-")
 print("models_rc", (values.get("registry") or {}).get("modelsConfigMap") or "-")
 print("models_oc", (values.get("orchestration") or {}).get("modelsConfigMap") or "-")
-print("pg_secret", (values.get("postgresql") or {}).get("existingSecret") or "-")
-print("storage_node", ((values.get("postgresql") or {}).get("storage") or {}).get("nodeName") or "")
+database = values.get("database") or {}
+print("pg_secret", database.get("existingSecret") or "-")
+print("db_bundled", str(bool(database.get("bundled", True))).lower())
+print("db_type", database.get("type") or "postgresql")
+print("db_host", database.get("host") or "")
+print("db_port", database.get("port") or "")
+print("storage_node", (database.get("storage") or {}).get("nodeName") or "")
 PY
 )
 
@@ -571,7 +583,11 @@ if [ "$ORCHESTRATION_ENABLED" = true ]; then COMPONENTS="${COMPONENTS:+$COMPONEN
 if [ "$FRONTEND_ENABLED" = true ]; then COMPONENTS="${COMPONENTS:+$COMPONENTS }frontend"; fi
 echo "  Components:        ${COMPONENTS:-none}"
 echo "  Image tags:        registry=$TAG_REGISTRY orchestration=$TAG_ORCHESTRATION frontend=$TAG_FRONTEND"
-echo "  SQL:               in-cluster PostgreSQL (Secret $PG_SECRET)"
+if [ "$DB_BUNDLED" = true ]; then
+    echo "  SQL:               in-cluster $DB_TYPE (Secret $PG_SECRET)"
+else
+    echo "  SQL:               external $DB_TYPE at $DB_HOST:$DB_PORT"
+fi
 if [ -n "$STORAGE_NODE" ]; then
     echo "  Storage:           local hostPath fallback on node $STORAGE_NODE (openan-local)"
 else

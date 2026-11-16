@@ -449,7 +449,8 @@ def test_bundled_mysql_renders_from_descriptor():
 def test_installer_emits_unified_database_block():
     # issue #36: the per-type postgresql:/mysql: values duplication is gone.
     # The installer emits ONE database block; the bundled backend image
-    # override lives under database.backends.<type>, storage under
+    # override lives under database.backends.<type> and is generic (chart
+    # bundleImage descriptor + legacy config.env knobs), storage under
     # database.storage, external types carry host/port/passwordKey.
     text = (ROOT / "containerized/offline-install/scripts/install.sh").read_text(encoding="utf-8")
     assert 'echo "  backends:"' in text
@@ -459,6 +460,30 @@ def test_installer_emits_unified_database_block():
     assert '"password=${DB_PASSWORD}"' in text  # external credential key
     assert 'echo "postgresql:"' not in text
     assert 'echo "mysql:"' not in text
+    # Generic image emission: the registry-relative ref comes from the chart
+    # descriptor (bundleImage), with the legacy POSTGRES_IMAGE/MYSQL_IMAGE
+    # config.env knobs kept working for the two historical types.
+    assert 'bundled_db_field "$DB_TYPE" bundleImage' in text
+    assert 'echo "      image: \\"${REG_HOST}/${DB_IMAGE_OVERRIDE}\\"' in text
+    # No per-type emission branch remains.
+    assert 'if [ "$DB_TYPE" = "mysql" ]; then' not in text
+    assert "postgresql|mysql) DB_BUNDLED" not in text
+
+
+def test_offline_installer_database_menu_is_chart_data_driven():
+    # The interactive menu, the bundled/external classification and the
+    # image override follow database.backends in the bundled chart data —
+    # adding a bundled backend to the chart never touches the installer
+    # (zero-hardcode contract; the awk parser has a bash-side runtime test
+    # where bash is available).
+    script = (ROOT / "containerized/offline-install/scripts/install.sh").read_text(encoding="utf-8")
+    assert "bundled_db_types()" in script
+    assert "bundled_db_field()" in script
+    assert 'ask_choice "  Database backend:" $DB_MENU' in script
+    # The chart carries the registry-relative bundleImage the installer emits.
+    chart = (ROOT / "containerized/offline-install/chart/values.yaml").read_text(encoding="utf-8")
+    assert 'bundleImage: "library/postgres:15-alpine"' in chart
+    assert 'bundleImage: "library/mysql:8.4.3"' in chart
 
 
 def test_oc_verify_client_follows_values():

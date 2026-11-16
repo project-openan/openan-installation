@@ -1,7 +1,7 @@
 {{/* Copyright (c) 2026 Huawei Technologies Co., Ltd. SPDX-License-Identifier: Apache-2.0 */}}
 {{/* Evaluation fallback for clusters without a StorageClass: a node-pinned
      local PV matching the runtime PVC. Bind through a shared storageClassName
-     (e.g. openan-local created via postgresql.storage.createStorageClass).
+     (e.g. openan-local created via database.storage.createStorageClass).
      Single-node clusters only: on multi-node clusters the workload must be
      scheduled on the pinned node for the claim to bind. */}}
 {{- $defaultPv := dict "registry" "openan-rc-pv" "orchestration" "openan-oc-pv" }}

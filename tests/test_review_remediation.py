@@ -16,7 +16,7 @@ from test_deployment_contract import BASH, CHART, ROOT, render
 
 
 def external(db, port=None):
-    settings = {"database.type": db, "postgresql.enabled": False, "database.host": "sql.example",
+    settings = {"database.type": db, "database.bundled": False, "database.host": "sql.example",
                 "database.registry.existingSecret": "rc-db", "database.orchestration.existingSecret": "oc-db"}
     if port is not None:
         settings["database.port"] = port
@@ -48,29 +48,36 @@ def test_external_type_passthrough_flows_to_services(db, port):
 def test_external_type_without_port_fails_with_clear_message():
     # Unknown types carry no default port: the omission must fail at render
     # time, not deploy a bogus port.
-    assert "no default port is known" in render(external("gauss"), success=False)
+    assert "known default port" in render(external("gauss"), success=False)
 
 
-def test_external_type_requires_host_and_bundled_conflict_fails():
-    # A non-postgresql type conflicts with the bundled postgres StatefulSet.
-    settings = {"database.type": "gauss", "database.port": 5432,
+def test_bundled_type_without_descriptor_fails_with_bundled_list():
+    # A typo or a type the chart does not bundle must die at render time with
+    # the valid bundled names — not silently deploy as external SQL.
+    error = render({"database.type": "postgers", "database.existingSecret": "s"}, success=False)
+    assert "database.backends entry" in error
+    assert "mysql, postgresql" in error
+
+
+def test_external_type_requires_host():
+    # bundled=false without a host must fail loudly (the helper fires before
+    # validate.yaml renders; messages are identical by contract).
+    settings = {"database.type": "gauss", "database.bundled": False, "database.port": 5432,
                 "database.registry.existingSecret": "rc-db",
                 "database.orchestration.existingSecret": "oc-db"}
-    assert "requires postgresql.enabled=false" in render(settings, success=False)
-    # With the bundle disabled but no host, the omission must fail loudly.
-    settings.update({"postgresql.enabled": False})
     assert "is external: set database.host" in render(settings, success=False)
 
 
-def test_external_type_requires_per_service_secret():
+def test_external_type_requires_per_service_secret_or_shared():
     settings = external("gauss", 5432)
+    # The render BASE sets a shared database.existingSecret; clear it so the
+    # per-service rule is what gets exercised.
+    settings["database.existingSecret"] = ""
     del settings["database.registry.existingSecret"]
-    assert "database.registry.existingSecret is required" in render(settings, success=False)
-
-
-def test_bundled_pg_uses_its_listener_not_external_port():
-    docs = render({"postgresql.port": 5545, "database.port": 3344})
-    assert docs["registry-center-config"]["data"]["DB_PORT"] == "5545"
+    assert "external SQL requires database.registry.existingSecret" in render(settings, success=False)
+    # The shared database.existingSecret satisfies the external credential
+    settings["database.existingSecret"] = "shared-db"
+    render(settings)
 
 
 @pytest.mark.parametrize("port", ["invalid", -1, 0, 65536, "12.5"])
@@ -241,7 +248,7 @@ def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto", "yes"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "yes"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     saved = {}
@@ -289,7 +296,7 @@ def test_wizard_generated_values_contain_references_not_credentials(tmp_path, mo
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     saved = {}
@@ -302,9 +309,11 @@ def test_wizard_generated_values_contain_references_not_credentials(tmp_path, mo
     token = saved["openan-oc-runtime"]["REGISTRY_ACCESS_TOKEN"]
     assert token not in output.read_text(encoding="utf-8")
     assert "token_hash=" in saved["openan-rc-credentials"]["integration_credentials.conf"]
-    # SQL is not asked: evaluation always uses in-cluster PostgreSQL
-    assert values["postgresql"] == {"enabled": True, "existingSecret": "openan-pg"}
-    assert values["database"] == {"type": "postgresql"}
+    # Default path: in-cluster postgresql from the chart's descriptor data
+    # (bundled flag + shared credential Secret named by the descriptor).
+    assert values["database"] == {"bundled": True, "type": "postgresql",
+                                  "existingSecret": "openan-pg"}
+    assert "postgresql" not in values
 
 
 def test_offline_k8s_entrypoints_are_not_sealed():
@@ -322,7 +331,7 @@ def test_wizard_in_cluster_default_values_shape(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     saved = {}
@@ -332,13 +341,77 @@ def test_wizard_in_cluster_default_values_shape(tmp_path, monkeypatch):
     module.configure("openan", "openan", output)
     text = output.read_text(encoding="utf-8")
     values = json.loads(text)
-    assert values["postgresql"] == {"enabled": True, "existingSecret": "openan-pg"}
-    assert values["database"] == {"type": "postgresql"}
+    assert values["database"] == {"bundled": True, "type": "postgresql",
+                                  "existingSecret": "openan-pg"}
     assert values["registry"]["signing"] == {"mode": "auto"}
     # Not asked anymore: evaluation always uses the catch-all host (LB-IP access)
     assert values["ingress"] == {"host": ""}
     assert saved["openan-pg"] == {"postgres-password": "PgSecret123!"}
     assert "PgSecret123!" not in text
+
+
+def test_wizard_backend_menu_follows_chart_data():
+    # The wizard's bundled menu is data-driven from the chart's
+    # database.backends descriptor (issue #36): adding a chart backend
+    # extends the wizard with zero wizard changes. The contract locks the
+    # parser output to the chart file.
+    module = wizard()
+    backends = module.bundled_backends()
+    assert set(backends) == {"postgresql", "mysql"}
+    assert backends["postgresql"] == {"passwordKey": "postgres-password",
+                                      "credentialSecretSuffix": "pg", "port": "5432"}
+    assert backends["mysql"] == {"passwordKey": "mysql-root-password",
+                                 "credentialSecretSuffix": "mysql", "port": "3306"}
+
+
+def test_wizard_in_cluster_mysql_flow(tmp_path, monkeypatch):
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "in-cluster", "mysql", "skip", "auto", "no"],
+        secrets=["MyRootPass123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    # Descriptor-driven Secret name and credential key: openan-mysql +
+    # mysql-root-password (historical openan-pg stays untouched).
+    assert values["database"] == {"bundled": True, "type": "mysql",
+                                  "existingSecret": "openan-mysql"}
+    assert saved["openan-mysql"] == {"mysql-root-password": "MyRootPass123!"}
+    assert "openan-pg" not in saved
+    assert "MyRootPass123!" not in output.read_text(encoding="utf-8")
+
+
+def test_wizard_external_sql_flow(tmp_path, monkeypatch):
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0", "gauss", "gauss.internal", "5433"],
+        chooses=["all", "workflow-designer", "external SQL", "skip", "auto", "no"],
+        secrets=["ExtSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda *args: None)
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    # External SQL: no bundled workload or Secret, per-service credentials,
+    # type/host/port passed through (PERSISTENCE_MODE verbatim).
+    assert values["database"] == {"bundled": False, "type": "gauss",
+                                  "host": "gauss.internal", "port": 5433,
+                                  "registry": {"existingSecret": "openan-rc-db"},
+                                  "orchestration": {"existingSecret": "openan-oc-db"}}
+    assert saved["openan-rc-db"] == {"db-password": "ExtSecret123!"}
+    assert saved["openan-oc-db"] == {"db-password": "ExtSecret123!"}
+    assert "openan-pg" not in saved and "openan-mysql" not in saved
+    assert "ExtSecret123!" not in output.read_text(encoding="utf-8")
 
 
 def test_wizard_generate_models_keeps_keys_only_in_runtime_secrets(tmp_path, monkeypatch):
@@ -351,7 +424,7 @@ def test_wizard_generate_models_keeps_keys_only_in_runtime_secrets(tmp_path, mon
             "v1.0.0", "v1.0.0",
             "rc-model-id", "https://llm.example/v1/chat/completions",
         ],
-        chooses=["all", "workflow-designer", "now", "yes", "no", "no", "auto"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "now", "yes", "no", "no", "auto"],
         secrets=["rc-llm-key", "PgSecret9!", "AdminPassw0rd!xy"],
         optional=iter(["", "", ""]),           # embed/rerank/a2at all skipped
     )
@@ -430,7 +503,7 @@ def test_wizard_rejects_missing_public_dependencies_before_secrets(tmp_path, mon
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0", "my-signing-secret"],
-        chooses=["all", "workflow-designer", "skip", "secret", "no"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "secret", "no"],
         secrets=None,
     )
     # kubectl get returns non-zero -> reference check fails
@@ -454,7 +527,7 @@ def test_wizard_local_storage_fallback_values(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.0.0", "v1.0.0"],
-        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     # No default StorageClass and a detectable node: the fallback engages
@@ -467,8 +540,8 @@ def test_wizard_local_storage_fallback_values(tmp_path, monkeypatch):
     output = tmp_path / "values.json"
     module.configure("openan", "openan", output, tag="tested")
     values = json.loads(output.read_text(encoding="utf-8"))
-    assert values["postgresql"]["storage"] == {"createStorageClass": True, "storageClassName": "openan-local",
-                                               "createPV": True, "useHostPath": True, "nodeName": "node-1"}
+    assert values["database"]["storage"] == {"createStorageClass": True, "storageClassName": "openan-local",
+                                             "createPV": True, "useHostPath": True, "nodeName": "node-1"}
     for component in ("registry", "orchestration"):
         assert values[component]["persistence"] == {"storageClassName": "openan-local", "createPV": True,
                                                     "useHostPath": True, "nodeName": "node-1"}
@@ -481,7 +554,7 @@ def test_wizard_per_component_image_tags(tmp_path, monkeypatch):
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.1.2", "main-20261019", "v2.0.0"],
-        chooses=["all", "portal", "skip", "auto", "no"],
+        chooses=["all", "portal", "in-cluster", "postgresql", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     monkeypatch.setattr(module, "create_secret", lambda *args: None)
@@ -500,7 +573,7 @@ def test_wizard_frontend_workflow_designer_follows_orchestration_tag(tmp_path, m
     _mock_wizard(
         monkeypatch, module,
         asks=["v1.1.2", "main-20261019"],
-        chooses=["all", "workflow-designer", "skip", "auto", "no"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "no"],
         secrets=["PgSecret123!", "AdminPass123!xy"],
     )
     monkeypatch.setattr(module, "create_secret", lambda *args: None)
@@ -525,7 +598,7 @@ def test_wizard_optional_models_and_a2at_land_in_values_and_secrets(tmp_path, mo
             "https://llm.example/v1/embeddings",   # embed URL
             "https://api.example.com/v1",          # a2at URL
         ],
-        chooses=["all", "workflow-designer", "now", "yes", "auto", "no"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "now", "yes", "auto", "no"],
         secrets=[
             "rc-chat-key", "rc-embed-key",       # registry chat + embed keys
             "a2at-key",                           # a2at key
@@ -572,7 +645,7 @@ def test_uninstall_detects_all_openan_pvs_and_grouped_hostpath_cleanup():
     text = (ROOT / "containerized/online-install/uninstall.sh").read_text(encoding="utf-8")
     assert "app.kubernetes.io/part-of=openan" in text
     assert "{.spec.volumeName}" in text
-    for pv in ("openan-postgres-pv", "openan-rc-pv", "openan-oc-pv"):
+    for pv in ("openan-postgres-pv", "openan-mysql-pv", "openan-rc-pv", "openan-oc-pv"):
         assert pv in text
     assert "clean_hostpath_node" in text
 

@@ -2,7 +2,7 @@
 
 See [HTTP/HTTPS and database deployment contract](../../TRANSPORT_DEPLOYMENT.md) for the current supported configuration, Secret schemas and migration requirements.
 
-- Select SQL type with database.type; postgresql.enabled controls in-cluster hosting, not the application provider. Any non-postgresql type is external SQL that passes through verbatim (PERSISTENCE_MODE) — the services must support it; unknown types need an explicit database.port.
+- One open database contract (issue #36): `database.type` + `database.bundled` select the SQL. A type listed in `database.backends` is bundled (descriptor data renders the in-cluster StatefulSet); `bundled=false` is external SQL whose type passes through verbatim (PERSISTENCE_MODE) — the services must support it; types without a descriptor need an explicit `database.port`. Adding a bundled backend = one descriptor entry + one init file, no template changes.
 - Supply runtimeSecret, database credentials and model definitions explicitly. No shared default passwords.
 - HTTP and HTTPS-no-mTLS retain application authentication. TLS, signing and peer verification are independent controls.
 - Supply TLS Secrets created by enterprise PKI or the development certificate tool. Helm auto TLS keys are no longer supported.
@@ -11,7 +11,7 @@ See [HTTP/HTTPS and database deployment contract](../../TRANSPORT_DEPLOYMENT.md)
 - `frontend.type` selects the unified entry: portal (default, listens on 8080) or workflow-designer (legacy, chart-managed nginx). `frontend.backendTls` and `frontend.nginxConfig` apply only to workflow-designer; both types deploy as openan-frontend resources (Deployment/Service/Ingress).
 - RC and OC each use one replica: RC event listeners/dispatchers and OC sessions are process-local. Extra replicas — and enabling HPA — are rejected at render time (`validate.yaml`), not an HA option. Legacy vector-only RC mode cannot serve the complete SQL-backed API and is rejected.
 - Independent retained runtime PVCs hold each service's data and logs, even with external SQL. Both services use Recreate upgrades to avoid overlapping file writers; plan a maintenance window. See the deployment contract for existing claims and pre-upgrade backup/restore.
-- Storage fallback: on clusters without a StorageClass, `postgresql.storage.createStorageClass` + `createPV`/`useHostPath`/`nodeName` create the shared `openan-local` class and node-pinned hostPath PVs (postgres, `openan-rc-pv`, `openan-oc-pv`) so all claims bind — single-node evaluation only. `persistence.createPV` requires `storageClassName`; `uninstall.sh` cleans these PVs and their hostPath data.
+- Storage fallback: on clusters without a StorageClass, `database.storage.createStorageClass` + `createPV`/`useHostPath`/`nodeName` create the shared `openan-local` class and node-pinned hostPath PVs (bundled database, `openan-rc-pv`, `openan-oc-pv`) so all claims bind — single-node evaluation only. `persistence.createPV` requires `storageClassName`; `uninstall.sh` cleans these PVs and their hostPath data.
 
 ```bash
 helm lint . --namespace openan -f deployment.yaml
