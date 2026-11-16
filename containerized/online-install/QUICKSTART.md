@@ -60,11 +60,11 @@ Log in with the admin account configured in the wizard and change the password i
 ## HTTPS deployment
 
 1. **MetalLB pool first**: a routable IP range must exist (the same IPAddressPool offered in phase [2/4]) so the ingress gets a stable IP; point DNS or an `/etc/hosts` entry at it.
-2. **Generate certificates** with the in-repo tool (requires a registry-center source checkout and the Python `cryptography` package):
+2. **Generate certificates** with the in-repo standalone tool (Python `cryptography` package only; no source-tree checkout needed):
 
    ```bash
    pip install cryptography    # one-time, on the machine running the tool
-   python3 tool/gen_certs.py --registry-center-src <registry-center-src> \
+   python3 tool/gen_certs.py \
        --out ./certs --namespace openan \
        --ingress-host openan.example.com [--ingress-ip <LB-IP> ...]
    # Output tree:

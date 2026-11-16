@@ -20,7 +20,6 @@ import getpass
 import hashlib
 import hmac
 import json
-import os
 from pathlib import Path
 import re
 import secrets
@@ -479,11 +478,14 @@ def configure(namespace, release, output, tag=None):
     https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "yes")
     https_config = {}
     if https_enabled == "yes":
-        # Generate self-signed certificates using the bundled gen_certs.py tool.
-        # The tool requires the registry-center source tree (CertificateGenerator).
+        # Generate self-signed certificates with the standalone gen_certs.py
+        # tool (cryptography library only; no source-tree dependency). The
+        # tool lives in the repo-root tool/ directory (moved there from the
+        # per-line tool/ copies); resolve it relative to this file:
+        # containerized/online-install/ -> parents[2] is the repo root.
         cert_dir = output.parent / "certs"
         cert_dir.mkdir(exist_ok=True)
-        script_dir = Path(__file__).resolve().parent.parent
+        script_dir = Path(__file__).resolve().parents[2]
         gen_script = script_dir / "tool" / "gen_certs.py"
         if not gen_script.is_file():
             raise ValueError(f"gen_certs.py not found at {gen_script}")
@@ -499,9 +501,6 @@ def configure(namespace, release, output, tag=None):
             capture_output=True, text=True)
         if lb_ip.returncode == 0 and lb_ip.stdout.strip():
             gen_cmd += ["--ingress-ip", lb_ip.stdout.strip()]
-        rc_src = os.environ.get("OPENAN_REGISTRY_CENTER_SRC", "")
-        if rc_src:
-            gen_cmd += ["--registry-center-src", rc_src]
         result = subprocess.run(gen_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"Certificate generation failed: {result.stderr.strip()}")
