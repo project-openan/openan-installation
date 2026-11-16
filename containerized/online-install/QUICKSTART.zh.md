@@ -61,11 +61,11 @@ echo "http://${NODE_IP}:${NODE_PORT}/"
 ## HTTPS部署
 
 1. **先配置MetalLB IP池**：必须存在可路由的IP段（即第 [2/4] 阶段提供的同一IPAddressPool），Ingress才能获得稳定IP；将DNS或 `/etc/hosts` 记录指向该IP。
-2. **生成证书**（使用仓内工具；需要registry-center源码检出与Python `cryptography` 库）：
+2. **生成证书**（使用仓内独立工具；仅依赖Python `cryptography` 库，无需源码检出）：
 
    ```bash
    pip install cryptography    # 一次性，安装在运行工具的机器上
-   python3 tool/gen_certs.py --registry-center-src <registry-center-src> \
+   python3 tool/gen_certs.py \
        --out ./certs --namespace openan \
        --ingress-host openan.example.com [--ingress-ip <LB-IP> ...]
    # 输出目录树：

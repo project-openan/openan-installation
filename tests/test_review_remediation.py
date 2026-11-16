@@ -196,6 +196,59 @@ def test_wizard_never_overwrites_an_existing_secret(monkeypatch):
     assert len(calls) == 1
 
 
+def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
+    # The 1c6367f refactor moved gen_certs.py to the repo-root tool/ but left
+    # the wizard resolving the old containerized/tool/ path — with the HTTPS
+    # default flipped to "yes", every default wizard run failed with
+    # "gen_certs.py not found at .../containerized/tool/gen_certs.py".
+    # The HTTPS-yes flow must invoke the tool at its real repo-root location
+    # and wire the generated material into the TLS Secrets.
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "skip", "auto", "yes"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
+    gen_calls = []
+
+    def fake_run(command, **kwargs):
+        argv = [str(part) for part in command]
+        if any(part.endswith("gen_certs.py") for part in argv):
+            gen_calls.append(argv)
+            out = Path(argv[argv.index("--out") + 1])
+            for service in ("registry-center", "orchestration-center"):
+                (out / service).mkdir(parents=True, exist_ok=True)
+                for key in ("server.cer", "server_key.pem", "cert_pwd", "trust.cer"):
+                    (out / service / key).write_text("cert-material", encoding="utf-8")
+            for sub in ("ingress-client", "ca", "ingress"):
+                (out / sub).mkdir(parents=True, exist_ok=True)
+            (out / "ingress-client" / "tls.crt").write_text("client-crt", encoding="utf-8")
+            (out / "ingress-client" / "tls.key").write_text("client-key", encoding="utf-8")
+            (out / "ca" / "ca.cer").write_text("ca-cer", encoding="utf-8")
+            (out / "ingress" / "tls.crt").write_text("public-crt", encoding="utf-8")
+            (out / "ingress" / "tls.key").write_text("public-key", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        # kubectl LB-IP lookup: empty stdout -> no --ingress-ip flag
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    assert gen_calls, "the HTTPS=yes flow must invoke gen_certs.py"
+    gen_script = Path(gen_calls[0][1])
+    assert gen_script.is_file(), f"the invoked gen_certs.py must exist: {gen_script}"
+    assert gen_script == (ROOT / "tool" / "gen_certs.py")
+    # No removed flags: the tool is standalone (no --registry-center-src).
+    assert not any("--registry-center-src" in flag for flag in gen_calls[0])
+    # The generated material is wired into the TLS Secrets.
+    assert saved["openan-rc-tls"]["server.cer"] == "cert-material"
+    assert saved["openan-public-tls"]["tls.crt"] == "public-crt"
+
+
 def test_wizard_generated_values_contain_references_not_credentials(tmp_path, monkeypatch):
     module = wizard()
     # Interaction: components=all, tags, frontend, LLM=skip, signing=auto
