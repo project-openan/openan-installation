@@ -57,6 +57,26 @@ echo "http://${NODE_IP}:${NODE_PORT}/"
 
 Log in with the admin account configured in the wizard and change the password in the web UI before API use.
 
+### No MetalLB? Share a node IP through ingress-nginx + NodePort
+
+Without an allocatable IP range, skip the MetalLB pool in phase [2/4] and
+route everything through the single ingress edge on an existing node's IP
+(services stay ClusterIP; the ingress routes by path):
+
+```bash
+kubectl -n ingress-nginx patch svc ingress-nginx-controller --type json -p '[
+  {"op":"replace","path":"/spec/type","value":"NodePort"},
+  {"op":"add","path":"/spec/ports/0/nodePort","value":30080},
+  {"op":"add","path":"/spec/ports/1/nodePort","value":30443},
+  {"op":"replace","path":"/spec/externalTrafficPolicy","value":"Cluster"}]'
+
+# Open 30080/tcp (30443/tcp for the public-TLS entry) in the firewall, then:
+#   http://<any-node-IP>:30080/
+```
+
+For quick testing or internal development without a routable pool, prefer
+this or the NodePort fallback over forcing MetalLB L2 mode.
+
 ## HTTPS deployment
 
 1. **MetalLB pool first**: a routable IP range must exist (the same IPAddressPool offered in phase [2/4]) so the ingress gets a stable IP; point DNS or an `/etc/hosts` entry at it.

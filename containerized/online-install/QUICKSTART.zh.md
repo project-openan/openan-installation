@@ -58,6 +58,23 @@ echo "http://${NODE_IP}:${NODE_PORT}/"
 
 使用向导中配置的管理员账户登录：默认管理员用户名为 `admin`（OC播种的初始管理员账号），密码为向导中设置的初始管理员密码；登录后请在Web界面修改密码，再调用API。
 
+### 没有MetalLB？用 ingress-nginx + NodePort 共享节点IP
+
+申请不到可路由IP段时，在第 [2/4] 阶段跳过MetalLB IP池，让全部流量经单一Ingress边缘从既有节点IP进入，按路径分发到后端（服务保持ClusterIP）：
+
+```bash
+kubectl -n ingress-nginx patch svc ingress-nginx-controller --type json -p '[
+  {"op":"replace","path":"/spec/type","value":"NodePort"},
+  {"op":"add","path":"/spec/ports/0/nodePort","value":30080},
+  {"op":"add","path":"/spec/ports/1/nodePort","value":30443},
+  {"op":"replace","path":"/spec/externalTrafficPolicy","value":"Cluster"}]'
+
+# 防火墙放行 30080/tcp（公共TLS入口另加 30443/tcp），然后访问：
+#   http://<任意节点IP>:30080/
+```
+
+快速测试或内部开发拿不到可路由IP段时，优先本方案或NodePort回退，不要在无二层支持的网段强行配置MetalLB L2模式。
+
 ## HTTPS部署
 
 1. **先配置MetalLB IP池**：必须存在可路由的IP段（即第 [2/4] 阶段提供的同一IPAddressPool），Ingress才能获得稳定IP；将DNS或 `/etc/hosts` 记录指向该IP。
