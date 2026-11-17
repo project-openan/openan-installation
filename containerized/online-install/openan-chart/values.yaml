@@ -344,27 +344,28 @@ orchestration:
     maxReplicas: 10
     targetCPUUtilization: 70
     targetMemoryUtilization: 80
-  # Probes
+  # Probes. OC has no unauthenticated HTTP endpoint (all routes return 401
+  # without a session), so httpGet is not an option, and exec probes spawn a
+  # fresh Python process per kubelet check whose cold start (ssl + app_config
+  # imports, ~13s measured on ARM64 with a 500m CPU limit) can exceed any
+  # sane timeout and crash-loop a healthy container. All three probes use
+  # the TCP listener on the service port instead — the same contract the
+  # offline chart uses (field-verified there).
   livenessProbe:
-    exec:
-      command: ["python", "-m", "orchestrate.server.healthcheck"]
+    tcpSocket:
+      port: http          # named port: follows orchestration.port
     initialDelaySeconds: 40
     periodSeconds: 30
-    timeoutSeconds: 10
   readinessProbe:
-    exec:
-      command: ["python", "-m", "orchestrate.server.healthcheck"]
+    tcpSocket:
+      port: http
     initialDelaySeconds: 10
     periodSeconds: 10
-    timeoutSeconds: 10
   startupProbe:
-    exec:
-      command: ["python", "-m", "orchestrate.server.healthcheck"]
-    failureThreshold: 12
+    tcpSocket:
+      port: http
+    failureThreshold: 24
     periodSeconds: 10
-    # The exec healthcheck takes ~1.3-1.4s; the K8s default of 1s never
-    # succeeds, so the timeout must be explicit (same as liveness/readiness).
-    timeoutSeconds: 10
 
 # =============================================================================
 # Frontend Configuration (unified entry: portal or workflow-designer)

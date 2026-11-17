@@ -83,6 +83,7 @@ spec:
         imagePullPolicy: {{ .Values.orchestration.image.pullPolicy }}
         ports:
         - containerPort: {{ .Values.orchestration.port }}
+          name: http
         envFrom:
         - configMapRef:
             name: orchestration-center-config
