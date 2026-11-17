@@ -146,6 +146,27 @@ def test_mtls_with_http_get_probe_is_rejected():
          "registry.tls.existingSecret": "rc-tls"}, success=False)
 
 
+def test_probe_with_two_handlers_is_rejected():
+    # Helm deep-merges maps: an operator overriding the default httpGet probe
+    # with exec WITHOUT removing httpGet produces a probe with two handlers,
+    # which Kubernetes rejects. The chart fails this at render time with the
+    # =null remedy instead of letting the API server (or a rollout) fail.
+    # (exec.command is spelled out key by key: --set cannot inject a nested
+    # list inside a map in one flag — exec[0]= would render exec as a bare
+    # list, which is not the K8s probe shape.)
+    settings = {"registry.livenessProbe.exec.command[0]": "python",
+                "registry.livenessProbe.exec.command[1]": "-m",
+                "registry.livenessProbe.exec.command[2]": "agent_registry.healthcheck"}
+    # (httpGet from the defaults is still merged in)
+    assert "two handlers" in render(settings, success=False)
+    # Removing httpGet explicitly makes the exec override valid again.
+    settings["registry.livenessProbe.httpGet"] = None
+    docs = render(settings)
+    probe = docs["registry-center"]["spec"]["template"]["spec"]["containers"][0]["livenessProbe"]
+    assert probe["exec"]["command"] == ["python", "-m", "agent_registry.healthcheck"]
+    assert "httpGet" not in probe
+
+
 @pytest.mark.parametrize("name", ["registry-center", "orchestration-center"])
 def test_probe_timeout_seconds_exceeds_healthcheck_time(name):
     # BUG-5: exec healthchecks (Python startup + RSA3072 handshake) take
@@ -171,13 +192,25 @@ def test_probe_timeout_seconds_exceeds_healthcheck_time(name):
 def test_registry_probes_are_http_get_with_tls_aware_scheme():
     # Field regression: exec probes cold-started a Python process per check
     # (~13s on ARM64 / 500m CPU) and crash-looped a healthy RC. The defaults
-    # are httpGet against /health; the scheme follows the TLS switch (the
-    # kubelet does not verify the server certificate), and the mTLS path
-    # must override with an exec probe (validated separately).
+    # are httpGet against /health on the NAMED service port (follows
+    # registry.port — no probe drift when the operator changes the port);
+    # the scheme follows the TLS switch (the kubelet does not verify the
+    # server certificate), and the mTLS path must override with an exec
+    # probe (validated separately).
     docs = render()
     container = docs["registry-center"]["spec"]["template"]["spec"]["containers"][0]
+    ports = {p["name"]: p["containerPort"] for p in container["ports"]}
+    assert ports == {"http": 5000}
     for probe in ("livenessProbe", "readinessProbe"):
-        assert container[probe]["httpGet"] == {"path": "/health", "port": 5000, "scheme": "HTTP"}
+        assert container[probe]["httpGet"] == {"path": "/health", "port": "http", "scheme": "HTTP"}
+    # A changed service port flows into the container port; the named probe
+    # port follows without touching the probe values.
+    moved = render({"registry.port": 5500})
+    container = moved["registry-center"]["spec"]["template"]["spec"]["containers"][0]
+    assert container["ports"] == [{"containerPort": 5500, "name": "http"}]
+    assert container["livenessProbe"]["httpGet"]["port"] == "http"
+    assert docs["registry-center-config"]["data"]["REGISTRY_PORT"] == "5000"
+    assert moved["registry-center-config"]["data"]["REGISTRY_PORT"] == "5500"
     https = render({"registry.tls.enabled": True, "registry.tls.existingSecret": "rc-tls",
                     "registry.ingressClientSecret": "rc-ingress-trust",
                     "orchestration.registryClientSecret": "oc-registry-trust"})

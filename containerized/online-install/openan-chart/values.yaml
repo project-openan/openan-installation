@@ -230,19 +230,21 @@ registry:
   # app_config imports) measured ~13s on ARM64 with a 500m CPU limit —
   # permanently above the probe timeout, crash-looping a healthy container.
   # The kubelet does not verify the server certificate on HTTPS probes; the
-  # scheme is injected by the template (HTTPS when tls.enabled). mTLS
+  # scheme is injected by the template (HTTPS when tls.enabled), and the
+  # port defaults to the named service port (registry.port) — an operator
+  # overriding the port does not need to touch the probes. mTLS
   # (verifyClient=true) cannot be probed via httpGet — validated separately,
   # override with an exec probe there.
   livenessProbe:
     httpGet:
       path: /health
-      port: 5000
+      port: http          # named port: follows registry.port
     initialDelaySeconds: 30
     periodSeconds: 30
   readinessProbe:
     httpGet:
       path: /health
-      port: 5000
+      port: http
     initialDelaySeconds: 10
     periodSeconds: 10
 

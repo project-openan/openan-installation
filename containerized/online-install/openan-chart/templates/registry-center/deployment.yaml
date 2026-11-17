@@ -65,6 +65,7 @@ spec:
             drop: ["ALL"]
         ports:
         - containerPort: {{ $c.port }}
+          name: http
         envFrom:
         - configMapRef:
             name: registry-center-config
