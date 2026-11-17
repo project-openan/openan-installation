@@ -49,10 +49,12 @@ spec:
                 proxy_ssl_server_name on;
                 proxy_ssl_name orchestration-center;
                 proxy_ssl_verify {{ ternary "on" "off" .Values.frontend.backendTls.verifyServer }};
-                proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer;
+                # File names match the wizard Secret's keys (openan-ingress-client:
+                # ca.crt / tls.crt / tls.key) — one naming protocol everywhere.
+                proxy_ssl_trusted_certificate /etc/nginx/backend-tls/ca.crt;
                 {{- if .Values.frontend.backendTls.verifyClient }}
-                proxy_ssl_certificate /etc/nginx/backend-tls/client.cer;
-                proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem;
+                proxy_ssl_certificate /etc/nginx/backend-tls/tls.crt;
+                proxy_ssl_certificate_key /etc/nginx/backend-tls/tls.key;
                 {{- end }}
             {{- end }}
           command:

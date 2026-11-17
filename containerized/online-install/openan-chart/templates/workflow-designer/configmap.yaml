@@ -37,11 +37,12 @@ data:
             proxy_ssl_name orchestration-center;
             proxy_ssl_verify {{ ternary "on" "off" $.Values.frontend.backendTls.verifyServer }};
             {{- if $.Values.frontend.backendTls.verifyServer }}
-            proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer;
+            proxy_ssl_trusted_certificate /etc/nginx/backend-tls/ca.crt;
             {{- end }}
             {{- if $.Values.orchestration.tls.verifyClient }}
-            proxy_ssl_certificate /etc/nginx/backend-tls/client.cer;
-            proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem;
+            # Wizard Secret keys (openan-ingress-client): tls.crt / tls.key.
+            proxy_ssl_certificate /etc/nginx/backend-tls/tls.crt;
+            proxy_ssl_certificate_key /etc/nginx/backend-tls/tls.key;
             {{- end }}
             {{- end }}
         }

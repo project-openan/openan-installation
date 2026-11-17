@@ -346,6 +346,41 @@ def test_wizard_https_values_match_the_chart_contract(tmp_path, monkeypatch):
     assert gen_calls[0][idx + 1] == "openan.test"
 
 
+def test_workflow_designer_tls_paths_match_the_wizard_secret_keys():
+    # The wizard creates openan-ingress-client with the keys
+    # ca.crt / tls.crt / tls.key (configure.py). Every /etc/nginx/backend-tls/
+    # path the templates reference must be one of those keys — the historical
+    # trust.cer / client.cer / client_key.pem spellings pointed at files the
+    # mounted Secret never provides.
+    from test_deployment_contract import BASE
+    docs = render({**BASE, "orchestration.tls.enabled": True,
+                   "orchestration.tls.mode": "secret",
+                   "orchestration.tls.existingSecret": "oc-tls",
+                   "frontend.backendTls.existingSecret": "openan-ingress-client",
+                   "frontend.backendTls.verifyServer": True,
+                   "orchestration.tls.verifyClient": True,
+                   "orchestration.ingressClientSecret": "oc-ingress-client"})
+    import re
+    secret_keys = {"ca.crt", "tls.crt", "tls.key"}
+    dep = docs["Deployment/openan-frontend"]
+    paths = set()
+    # init container BACKEND_TLS_OPTIONS (image-template render path)
+    for container in dep["spec"]["template"]["spec"]["initContainers"]:
+        for env in container.get("env", []):
+            if env["name"] == "BACKEND_TLS_OPTIONS":
+                paths |= set(re.findall(
+                    r"/etc/nginx/backend-tls/([A-Za-z0-9._-]+)", env["value"]))
+    # chart ConfigMap fallback config
+    conf = docs["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
+    paths |= set(re.findall(
+        r"/etc/nginx/backend-tls/([A-Za-z0-9._-]+)", conf))
+    assert paths, "expected the rendered config to carry backendTLS directives"
+    assert paths <= secret_keys, f"paths outside the Secret keys: {paths - secret_keys}"
+    # the effective config still verifies the upstream against the mounted CA
+    assert "proxy_ssl_trusted_certificate /etc/nginx/backend-tls/ca.crt" in conf
+    assert "proxy_ssl_certificate /etc/nginx/backend-tls/tls.crt" in conf
+
+
 def test_wizard_generated_values_contain_references_not_credentials(tmp_path, monkeypatch):
     module = wizard()
     # Interaction: components=all, tags, frontend, LLM=skip, signing=auto
