@@ -612,10 +612,34 @@ def configure(namespace, release, output, tag=None):
     # --- HTTPS (optional, self-signed) ---------------------------------------
     https_enabled = choose("Enable HTTPS with self-signed certificates", ["yes", "no"], "yes")
     https_config = {}
-    # Public ingress hostname: signed into the cert SAN (gen_certs.py) and
-    # required non-empty by validate.yaml when ingress TLS is enabled.
-    ingress_host = "openan.test"
+    # The external entry follows the ingress-nginx LoadBalancer state, matching
+    # the offline installer: the MetalLB VIP is preferred; a node IP takes over
+    # when no VIP is assigned (NodePort entry through ingress-nginx). The same
+    # IP is signed into the public certificate SAN and used as the Ingress host,
+    # so clients reach the platform by a name the certificate was issued for.
+    ingress_host = ""
     if https_enabled == "yes":
+        # VIP of the ingress-nginx LoadBalancer, when a MetalLB pool assigned one.
+        vip = subprocess.run(
+            ["kubectl", "get", "svc", "-n", "ingress-nginx", "ingress-nginx-controller",
+             "-o", "jsonpath={.status.loadBalancer.ingress[0].ip}"],
+            capture_output=True, text=True)
+        vip_ip = vip.stdout.strip() if vip.returncode == 0 else ""
+        # First node IP: the NodePort entry through ingress-nginx when no VIP exists.
+        node = subprocess.run(
+            ["kubectl", "get", "nodes", "-o",
+             "jsonpath={.items[0].status.addresses[?(@.type=='InternalIP')].address}"],
+            capture_output=True, text=True)
+        node_ip = node.stdout.strip() if node.returncode == 0 else ""
+        # Both addresses go into the certificate SAN (offline-install contract):
+        # the platform stays reachable with a verifying certificate whether the
+        # cluster gained (or lost) its VIP, and https://<node-IP>:<NodePort> works.
+        san_ips = [ip for ip in (vip_ip, node_ip) if ip]
+        if not san_ips:
+            raise RuntimeError(
+                "No ingress VIP or node IP found for the HTTPS certificate; "
+                "configure a MetalLB pool or check kubectl access")
+        ingress_host = vip_ip or node_ip
         # Generate self-signed certificates with the standalone gen_certs.py
         # tool (cryptography library only; no source-tree dependency). The
         # tool lives in the repo-root tool/ directory (moved there from the
@@ -631,15 +655,9 @@ def configure(namespace, release, output, tag=None):
             sys.executable, str(gen_script),
             "--out", str(cert_dir),
             "--namespace", namespace,
-            "--ingress-host", ingress_host,
         ]
-        # Discover the LoadBalancer IP for the ingress SAN, if already assigned.
-        lb_ip = subprocess.run(
-            ["kubectl", "get", "svc", "-n", "ingress-nginx", "ingress-nginx-controller",
-             "-o", "jsonpath={.status.loadBalancer.ingress[0].ip}"],
-            capture_output=True, text=True)
-        if lb_ip.returncode == 0 and lb_ip.stdout.strip():
-            gen_cmd += ["--ingress-ip", lb_ip.stdout.strip()]
+        for san_ip in san_ips:
+            gen_cmd += ["--ingress-ip", san_ip]
         result = subprocess.run(gen_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"Certificate generation failed: {result.stderr.strip()}")
@@ -742,10 +760,12 @@ def configure(namespace, release, output, tag=None):
     else:
         values["orchestration"] = {"enabled": False}
         values["frontend"] = {"enabled": False, "image": {"tag": tags["frontend"]}}
-    # HTTP: empty catch-all host (direct LB-IP access). HTTPS: must match the
-    # SAN signed into the public cert — gen_certs.py --ingress-host above.
-    values["ingress"] = {"host": ingress_host if https_enabled == "yes" else ""}
-    if https_enabled == "yes":
+    # The external entry follows the discovered address: HTTPS writes the
+    # ingress-nginx entry IP as the Ingress host (SAN IP in the certificate,
+    # catch-all rule in the chart — Kubernetes rejects bare IPs in rules[]);
+    # HTTP keeps the empty catch-all host for direct IP access.
+    values["ingress"] = {"host": ingress_host}
+    if https_enabled == "yes" and ingress_host:
         values["ingress"]["tls"] = {"enabled": True, "secretName": prefix + "public-tls"}
 
     # Only non-secret JSON/YAML-compatible values. Exclusive creation preserves operator files.
