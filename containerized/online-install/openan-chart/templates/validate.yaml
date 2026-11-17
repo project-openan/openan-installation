@@ -83,7 +83,7 @@ SPDX-License-Identifier: Apache-2.0 */}}
 {{- if and .Values.frontend.enabled (eq (include "openan.frontendType" .) "workflow-designer") .Values.orchestration.tls.enabled }}
 {{- if and (or .Values.frontend.backendTls.verifyServer .Values.orchestration.tls.verifyClient) (not .Values.frontend.backendTls.existingSecret) }}{{ fail "frontend HTTPS verification/mTLS requires frontend.backendTls.existingSecret" }}{{ end }}
 {{- end }}
-{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled (not .Values.ingress.host) }}{{ fail "ingress TLS requires ingress.host matching the certificate" }}{{ end }}
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled (not .Values.ingress.host) }}{{ fail "ingress TLS requires ingress.host matching the certificate (DNS name, or bare IP for https://<IP> access)" }}{{ end }}
 {{- if and .Values.orchestration.enabled .Values.registry.enabled .Values.registry.tls.enabled }}
 {{- if and (or .Values.orchestration.clientVerifyServer .Values.registry.tls.verifyClient) (not .Values.orchestration.registryClientSecret) }}{{ fail "OC registry HTTPS verification/mTLS requires orchestration.registryClientSecret" }}{{ end }}
 {{- end }}

@@ -237,6 +237,35 @@ def test_wizard_rerun_reuses_its_own_secrets_and_configmaps(monkeypatch, capsys)
     assert "reusing the previous" in captured
 
 
+def _https_cert_run(gen_calls, vip="10.250.100.100", node_ip="192.168.200.137"):
+    """subprocess.run mock for the HTTPS wizard: answers the ingress-nginx
+    VIP / first-node-IP lookups and a successful gen_certs.py run."""
+    def fake_run(command, **kwargs):
+        argv = [str(part) for part in command]
+        if any(part.endswith("gen_certs.py") for part in argv):
+            gen_calls.append(argv)
+            out = Path(argv[argv.index("--out") + 1])
+            for service in ("registry-center", "orchestration-center"):
+                (out / service).mkdir(parents=True, exist_ok=True)
+                for key in ("server.cer", "server_key.pem", "cert_pwd", "trust.cer"):
+                    (out / service / key).write_text("cert-material", encoding="utf-8")
+            for sub in ("ingress-client", "ca", "ingress"):
+                (out / sub).mkdir(parents=True, exist_ok=True)
+            (out / "ingress-client" / "tls.crt").write_text("client-crt", encoding="utf-8")
+            (out / "ingress-client" / "tls.key").write_text("client-key", encoding="utf-8")
+            (out / "ca" / "ca.cer").write_text("ca-cer", encoding="utf-8")
+            (out / "ingress" / "tls.crt").write_text("public-crt", encoding="utf-8")
+            (out / "ingress" / "tls.key").write_text("public-key", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        joined = " ".join(argv)
+        if "ingress-nginx-controller" in joined:
+            return subprocess.CompletedProcess(command, 0, vip + "\n", "")
+        if "get nodes" in joined:
+            return subprocess.CompletedProcess(command, 0, node_ip + "\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+    return fake_run
+
+
 def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
     # The 1c6367f refactor moved gen_certs.py to the repo-root tool/ but left
     # the wizard resolving the old containerized/tool/ path — with the HTTPS
@@ -255,11 +284,147 @@ def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
     monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
     gen_calls = []
+    monkeypatch.setattr(module.subprocess, "run",
+                        _https_cert_run(gen_calls, vip="10.250.100.100", node_ip="192.168.200.137"))
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    assert gen_calls, "the HTTPS=yes flow must invoke gen_certs.py"
+    gen_script = Path(gen_calls[0][1])
+    assert gen_script.is_file(), f"the invoked gen_certs.py must exist: {gen_script}"
+    assert gen_script == (ROOT / "tool" / "gen_certs.py")
+    # No removed flags: the tool is standalone (no --registry-center-src).
+    assert not any("--registry-center-src" in flag for flag in gen_calls[0])
+    # The generated material is wired into the TLS Secrets.
+    assert saved["openan-rc-tls"]["server.cer"] == "cert-material"
+    assert saved["openan-public-tls"]["tls.crt"] == "public-crt"
+
+
+def test_wizard_https_values_match_the_chart_contract(tmp_path, monkeypatch):
+    # The HTTPS wizard values must match what validate.yaml enforces, or the
+    # deploy phase dies after all Secrets were already created:
+    #   1. frontend.backendTls nested — the flat frontend.verifyServer /
+    #      frontend.existingSecret shape fails validate.yaml:69 with
+    #      "frontend HTTPS verification/mTLS requires frontend.backendTls.existingSecret";
+    #   2. a non-empty ingress.host matching the SAN gen_certs.py signs
+    #      (--ingress-ip of the discovered entry address), or validate.yaml
+    #      fails with "ingress TLS requires ingress.host matching the certificate".
+    # The entry address follows the ingress-nginx state: the MetalLB VIP wins,
+    # the first node IP backs the NodePort entry; both go into the SAN.
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "yes"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
+    gen_calls = []
+    monkeypatch.setattr(module.subprocess, "run", _https_cert_run(gen_calls))
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    # 1. backendTls nested under frontend, no flat leftovers
+    assert values["frontend"]["backendTls"] == {"verifyServer": True,
+                                               "existingSecret": "openan-ingress-client"}
+    assert "verifyServer" not in values["frontend"]
+    assert "existingSecret" not in values["frontend"]
+    # 2. ingress host is the discovered VIP, and both entry addresses
+    #    (VIP + node IP for the NodePort fallback) are signed into the SAN
+    args = gen_calls[0]
+    ips = [args[i + 1] for i, flag in enumerate(args) if flag == "--ingress-ip"]
+    assert set(ips) == {"10.250.100.100", "192.168.200.137"}
+    assert "--ingress-host" not in args
+    assert values["ingress"]["host"] == "10.250.100.100"
+    assert values["ingress"]["tls"] == {"enabled": True, "secretName": "openan-public-tls"}
+
+
+def test_workflow_designer_tls_paths_match_the_wizard_secret_keys():
+    # The wizard creates openan-ingress-client with the keys
+    # ca.crt / tls.crt / tls.key (configure.py). Every /etc/nginx/backend-tls/
+    # path the templates reference must be one of those keys — the historical
+    # trust.cer / client.cer / client_key.pem spellings pointed at files the
+    # mounted Secret never provides.
+    from test_deployment_contract import BASE
+    docs = render({**BASE, "orchestration.tls.enabled": True,
+                   "orchestration.tls.mode": "secret",
+                   "orchestration.tls.existingSecret": "oc-tls",
+                   "frontend.backendTls.existingSecret": "openan-ingress-client",
+                   "frontend.backendTls.verifyServer": True,
+                   "orchestration.tls.verifyClient": True,
+                   "orchestration.ingressClientSecret": "oc-ingress-client"})
+    import re
+    secret_keys = {"ca.crt", "tls.crt", "tls.key"}
+    dep = docs["Deployment/openan-frontend"]
+    paths = set()
+    # init container BACKEND_TLS_OPTIONS (image-template render path)
+    for container in dep["spec"]["template"]["spec"]["initContainers"]:
+        for env in container.get("env", []):
+            if env["name"] == "BACKEND_TLS_OPTIONS":
+                paths |= set(re.findall(
+                    r"/etc/nginx/backend-tls/([A-Za-z0-9._-]+)", env["value"]))
+    # chart ConfigMap fallback config
+    conf = docs["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
+    paths |= set(re.findall(
+        r"/etc/nginx/backend-tls/([A-Za-z0-9._-]+)", conf))
+    assert paths, "expected the rendered config to carry backendTLS directives"
+    assert paths <= secret_keys, f"paths outside the Secret keys: {paths - secret_keys}"
+    # the effective config still verifies the upstream against the mounted CA
+    assert "proxy_ssl_trusted_certificate /etc/nginx/backend-tls/ca.crt" in conf
+    assert "proxy_ssl_certificate /etc/nginx/backend-tls/tls.crt" in conf
+
+
+def test_wizard_https_node_ip_entry_when_no_vip(tmp_path, monkeypatch):
+    # No MetalLB pool assigned a VIP: the first node IP becomes the public
+    # entry, signed into the SAN and written as the Ingress host, so the
+    # NodePort entry through ingress-nginx (https://<node-IP>:<NodePort>)
+    # serves the platform with a verifying certificate.
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "yes"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
+    gen_calls = []
+    monkeypatch.setattr(module.subprocess, "run",
+                        _https_cert_run(gen_calls, vip="", node_ip="192.168.200.137"))
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    # the node IP goes in as a SAN IP, not a DNS name
+    argv = gen_calls[0]
+    ips = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--ingress-ip"]
+    assert ips == ["192.168.200.137"]
+    assert "--ingress-host" not in argv
+    # the same value is the Ingress host clients send as Host
+    assert values["ingress"]["host"] == "192.168.200.137"
+    # the external entry is TLS with the IP in tls[].hosts (catch-all rule)
+    assert values["ingress"]["tls"] == {"enabled": True,
+                                        "secretName": "openan-public-tls"}
+
+
+def test_wizard_https_disabled_keeps_plain_http_entry(tmp_path, monkeypatch):
+    # HTTPS=no keeps the plain-HTTP catch-all entry (direct IP access) and
+    # skips certificate generation entirely; in-cluster traffic stays plain.
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0", "v1.0.0"],
+        chooses=["all", "workflow-designer", "in-cluster", "postgresql", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda ns, name, data: None)
 
     def fake_run(command, **kwargs):
         argv = [str(part) for part in command]
         if any(part.endswith("gen_certs.py") for part in argv):
-            gen_calls.append(argv)
             out = Path(argv[argv.index("--out") + 1])
             for service in ("registry-center", "orchestration-center"):
                 (out / service).mkdir(parents=True, exist_ok=True)
@@ -273,21 +438,42 @@ def test_wizard_https_invokes_repo_root_gen_certs(tmp_path, monkeypatch):
             (out / "ingress" / "tls.crt").write_text("public-crt", encoding="utf-8")
             (out / "ingress" / "tls.key").write_text("public-key", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, "", "")
-        # kubectl LB-IP lookup: empty stdout -> no --ingress-ip flag
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     output = tmp_path / "values.json"
     module.configure("openan", "openan", output)
-    assert gen_calls, "the HTTPS=yes flow must invoke gen_certs.py"
-    gen_script = Path(gen_calls[0][1])
-    assert gen_script.is_file(), f"the invoked gen_certs.py must exist: {gen_script}"
-    assert gen_script == (ROOT / "tool" / "gen_certs.py")
-    # No removed flags: the tool is standalone (no --registry-center-src).
-    assert not any("--registry-center-src" in flag for flag in gen_calls[0])
-    # The generated material is wired into the TLS Secrets.
-    assert saved["openan-rc-tls"]["server.cer"] == "cert-material"
-    assert saved["openan-public-tls"]["tls.crt"] == "public-crt"
+    values = json.loads(output.read_text(encoding="utf-8"))
+    # catch-all external entry, no ingress TLS, no cert Secrets created
+    assert values["ingress"] == {"host": ""}
+    assert "tls" not in values.get("registry", {})
+    assert "tls" not in values.get("orchestration", {})
+    assert "openan-rc-tls" not in saved
+
+
+def test_chart_bare_ip_host_renders_catch_all_rule_with_tls_san_ip():
+    # Kubernetes rejects bare IPs in rules[].host ("must be a DNS name") but
+    # accepts them in tls[].hosts. A bare-IP ingress.host must therefore
+    # render a catch-all rule (no host) plus a tls entry carrying the IP, so
+    # https://<IP> serves the platform with a matching SAN.
+    from test_deployment_contract import BASE
+    docs = render({**BASE, "ingress.host": "192.168.200.137",
+                   "ingress.tls.enabled": True,
+                   "ingress.tls.secretName": "openan-public-tls"})
+    for name in ("openan-frontend-ingress", "openan-orchestration-ingress",
+                 "openan-registry-ingress"):
+        ing = docs[f"Ingress/{name}"]
+        rule = ing["spec"]["rules"][0]
+        assert "host" not in rule, f"{name}: IP host must not reach rules[].host"
+        assert ing["spec"]["tls"] == [{"hosts": ["192.168.200.137"],
+                                       "secretName": "openan-public-tls"}]
+    # a DNS-name host still renders host-based routing as before
+    docs = render({**BASE, "ingress.host": "openan.example.com",
+                   "ingress.tls.enabled": True,
+                   "ingress.tls.secretName": "openan-public-tls"})
+    ing = docs["Ingress/openan-frontend-ingress"]
+    assert ing["spec"]["rules"][0]["host"] == "openan.example.com"
+    assert ing["spec"]["tls"][0]["hosts"] == ["openan.example.com"]
 
 
 def test_wizard_generated_values_contain_references_not_credentials(tmp_path, monkeypatch):

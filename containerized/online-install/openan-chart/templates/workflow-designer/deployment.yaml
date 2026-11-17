@@ -49,10 +49,12 @@ spec:
                 proxy_ssl_server_name on;
                 proxy_ssl_name orchestration-center;
                 proxy_ssl_verify {{ ternary "on" "off" .Values.frontend.backendTls.verifyServer }};
-                proxy_ssl_trusted_certificate /etc/nginx/backend-tls/trust.cer;
+                # File names match the wizard Secret's keys (openan-ingress-client:
+                # ca.crt / tls.crt / tls.key) — one naming protocol everywhere.
+                proxy_ssl_trusted_certificate /etc/nginx/backend-tls/ca.crt;
                 {{- if .Values.frontend.backendTls.verifyClient }}
-                proxy_ssl_certificate /etc/nginx/backend-tls/client.cer;
-                proxy_ssl_certificate_key /etc/nginx/backend-tls/client_key.pem;
+                proxy_ssl_certificate /etc/nginx/backend-tls/tls.crt;
+                proxy_ssl_certificate_key /etc/nginx/backend-tls/tls.key;
                 {{- end }}
             {{- end }}
           command:
@@ -122,6 +124,29 @@ spec:
         - name: openan-frontend
           image: "{{ include "openan.frontendImageRepository" . }}:{{ .Values.frontend.image.tag }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          {{- if eq (include "openan.frontendType" .) "workflow-designer" }}
+          # The image entrypoint defaults BACKEND_SCHEME=auto and resolves it
+          # from ORCH_ENABLE_HTTPS (it cannot probe the upstream itself); the
+          # chart passes the cluster TLS state through. https+verify requires
+          # BACKEND_CA_FILE (entrypoint exits 1 without it) pointing at the
+          # backendTls secret mount, and mTLS client material when the OC
+          # requires client certificates.
+          env:
+            {{- if .Values.orchestration.tls.enabled }}
+            - name: ORCH_ENABLE_HTTPS
+              value: "true"
+            {{- end }}
+            {{- if and .Values.frontend.backendTls.existingSecret .Values.frontend.backendTls.verifyServer }}
+            - name: BACKEND_CA_FILE
+              value: /etc/nginx/backend-tls/ca.crt
+            {{- end }}
+            {{- if and .Values.frontend.backendTls.existingSecret .Values.orchestration.tls.verifyClient }}
+            - name: BACKEND_CLIENT_CERT
+              value: /etc/nginx/backend-tls/tls.crt
+            - name: BACKEND_CLIENT_KEY
+              value: /etc/nginx/backend-tls/tls.key
+            {{- end }}
+          {{- end }}
           {{- if eq (include "openan.frontendType" .) "portal" }}
           # The portal image renders its own nginx config from the template
           # shipped in the image; the chart only provides the upstream URLs.
@@ -150,9 +175,11 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           {{- if eq (include "openan.frontendType" .) "workflow-designer" }}
           volumeMounts:
-            - name: nginx-config
+            # Writable on purpose: the stock nginx docker-entrypoint renders
+            # /etc/nginx/templates/*.template into /etc/nginx/conf.d itself;
+            # a read-only mount makes 20-envsubst-on-templates.sh exit 1.
+            - name: nginx-conf-rendered
               mountPath: /etc/nginx/conf.d
-              readOnly: true
             {{- if .Values.frontend.backendTls.existingSecret }}
             - name: backend-tls
               mountPath: /etc/nginx/backend-tls
@@ -161,7 +188,13 @@ spec:
           {{- end }}
       {{- if eq (include "openan.frontendType" .) "workflow-designer" }}
       volumes:
-        - name: nginx-config
+        # Rendered nginx config: written by the render-nginx-config
+        # initContainer (from the chart ConfigMap or the image template),
+        # then mounted read-only at /etc/nginx/conf.d. Mounting the
+        # ConfigMap itself there breaks the stock nginx entrypoint.
+        - name: nginx-conf-rendered
+          emptyDir: {}
+        - name: nginx-config-cm
           configMap:
             name: openan-frontend-nginx-config
         {{- if .Values.frontend.backendTls.existingSecret }}

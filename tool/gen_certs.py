@@ -26,6 +26,7 @@ Output tree (compatible with the chart TLS secret contract):
     <out>/registry-center/{server.cer, server_key.pem, cert_pwd, trust.cer}
     <out>/orchestration-center/{server.cer, server_key.pem, cert_pwd, trust.cer}
     <out>/ingress/{tls.crt, tls.key, cert_pwd, trust.cer}
+    <out>/ingress-client/{tls.crt, tls.key, trust.cer}
 """
 import argparse
 import os
@@ -49,7 +50,10 @@ class StandaloneCertGenerator:
 
     def _generate_key(self):
         from cryptography.hazmat.primitives.asymmetric import rsa
-        return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        # 3072-bit RSA: RC/OC enforce a minimum server-cert key length
+        # ("Certificate key algorithm or length does not meet requirements"),
+        # matching the offline contract (gen_certs_offline.py KEY_BITS=3072).
+        return rsa.generate_private_key(public_exponent=65537, key_size=3072)
 
     def _exists_any(self, directory, names):
         return any(os.path.exists(os.path.join(directory, n)) for n in names)
@@ -117,7 +121,8 @@ class StandaloneCertGenerator:
                                     common_name, san_dns=(), san_ips=(),
                                     password=None,
                                     cert_file=None,
-                                    key_file=None):
+                                    key_file=None,
+                                    client_auth=False):
         """Generate a server leaf signed by the CA, with SAN.
 
         cert_file/key_file default to upstream contract names (server.cer /
@@ -148,7 +153,10 @@ class StandaloneCertGenerator:
                           crl_sign=False, encipher_only=False, decipher_only=False),
             critical=True)
         builder = builder.add_extension(
-            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH
+                                   if client_auth
+                                   else ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False)
         builder = builder.add_extension(
             x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
             critical=False)
@@ -204,12 +212,21 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     import secrets as _secrets
-    password = args.ca_password or _secrets.token_urlsafe(16)
+    out = args.out
+    password = args.ca_password
+    if password is None:
+        # Re-run against an existing tree: reuse the stored CA password so
+        # missing leaves can still be signed by the existing CA.
+        pwd_file = os.path.join(out, "ca", "cert_pwd")
+        if os.path.isfile(pwd_file):
+            with open(pwd_file) as f:
+                password = f.read().strip()
+    if not password:
+        password = _secrets.token_urlsafe(16)
 
     gen = StandaloneCertGenerator(key_algorithm="RSA")
 
     ns, dom = args.namespace, args.cluster_domain
-    out = args.out
 
     services = {
         "registry-center": {
@@ -245,6 +262,15 @@ def main(argv=None):
         san_ips=ingress_ips, password=password,
         cert_file="tls.crt", key_file="tls.key")
     print(f"ingress: {'generated' if ok else 'SKIPPED (exists)'}")
+
+    # ingress->backend client certificate for nginx proxy-ssl / mTLS
+    # (same contract as gen_certs_offline.py: clientAuth EKU, PLAIN tls.key).
+    ok = gen.generate_signed_server_cert(
+        os.path.join(out, "ingress-client"), os.path.join(out, "ca"), password,
+        common_name="openan-ingress-client", san_dns=[], san_ips=[],
+        password=password, cert_file="tls.crt", key_file="tls.key",
+        client_auth=True)
+    print(f"ingress-client: {'generated' if ok else 'SKIPPED (exists)'}")
 
     print("\nAll certificates generated under:", out)
     print("Next: create TLS secrets, see QUICKSTART 'HTTPS' section.")

@@ -15,6 +15,11 @@ metadata:
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- /* Kubernetes rejects bare IPs in rules[].host ("must be a DNS name");
+       tls[].hosts accepts them. A bare-IP ingress.host therefore renders a
+       catch-all rule plus a tls entry with the IP, so https://<IP> works with
+       the matching SAN IP (offline-install semantics). */ -}}
+  {{- $hostIsIP := and .Values.ingress.host (or (regexMatch "^[0-9.]+$" .Values.ingress.host) (contains .Values.ingress.host ":")) }}
   {{- if and .Values.ingress.tls.enabled .Values.ingress.host }}
   tls:
   - hosts:
@@ -22,7 +27,7 @@ spec:
     secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - {{- if .Values.ingress.host }}
+    - {{- if and .Values.ingress.host (not $hostIsIP) }}
       host: {{ .Values.ingress.host }}
       {{- end }}
       http:
@@ -64,6 +69,11 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- /* Kubernetes rejects bare IPs in rules[].host ("must be a DNS name");
+       tls[].hosts accepts them. A bare-IP ingress.host therefore renders a
+       catch-all rule plus a tls entry with the IP, so https://<IP> works with
+       the matching SAN IP (offline-install semantics). */ -}}
+  {{- $hostIsIP := and .Values.ingress.host (or (regexMatch "^[0-9.]+$" .Values.ingress.host) (contains .Values.ingress.host ":")) }}
   {{- if and .Values.ingress.tls.enabled .Values.ingress.host }}
   tls:
   - hosts:
@@ -71,7 +81,7 @@ spec:
     secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - {{- if .Values.ingress.host }}
+    - {{- if and .Values.ingress.host (not $hostIsIP) }}
       host: {{ .Values.ingress.host }}
       {{- end }}
       http:
@@ -113,6 +123,11 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- /* Kubernetes rejects bare IPs in rules[].host ("must be a DNS name");
+       tls[].hosts accepts them. A bare-IP ingress.host therefore renders a
+       catch-all rule plus a tls entry with the IP, so https://<IP> works with
+       the matching SAN IP (offline-install semantics). */ -}}
+  {{- $hostIsIP := and .Values.ingress.host (or (regexMatch "^[0-9.]+$" .Values.ingress.host) (contains .Values.ingress.host ":")) }}
   {{- if and .Values.ingress.tls.enabled .Values.ingress.host }}
   tls:
   - hosts:
@@ -120,7 +135,7 @@ spec:
     secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - {{- if .Values.ingress.host }}
+    - {{- if and .Values.ingress.host (not $hostIsIP) }}
       host: {{ .Values.ingress.host }}
       {{- end }}
       http:

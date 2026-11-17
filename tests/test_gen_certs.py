@@ -120,6 +120,38 @@ def test_ingress_variant_is_plain_pem_without_pwd(generator, tmp_path):
         open(os.path.join(leaf_dir, "tls.crt"), "rb").read())
 
 
+def test_client_auth_variant_carries_client_eku_and_plain_key(generator, tmp_path):
+    # The wizard reads ingress-client/{tls.crt,tls.key} as nginx proxy-ssl
+    # CLIENT material (proxy_ssl_certificate): it must carry clientAuth EKU
+    # (not the serverAuth default) and a PLAIN key nginx can read unattended.
+    gen, _ = generator
+    ca_dir, leaf_dir = generate_all(gen, tmp_path, cert_file="tls.crt",
+                                   key_file="tls.key", client_auth=True)
+    leaf = load_cert(os.path.join(leaf_dir, "tls.crt"))
+    eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+    assert ExtendedKeyUsageOID.CLIENT_AUTH in eku.value
+    assert ExtendedKeyUsageOID.SERVER_AUTH not in eku.value
+    with open(os.path.join(leaf_dir, "tls.key"), "rb") as f:
+        assert b"ENCRYPTED" not in f.read()
+    with pytest.raises(FileNotFoundError):
+        open(os.path.join(leaf_dir, "cert_pwd"))
+    # signed by the same CA, trust anchor copied
+    assert load_cert(os.path.join(leaf_dir, "trust.cer")) == \
+        load_cert(os.path.join(ca_dir, "ca.cer"))
+
+
+def test_keys_meet_the_3072_bit_minimum(generator, tmp_path):
+    # RC/OC reject shorter server keys at startup ("Certificate key algorithm
+    # or length does not meet requirements") — the online tool must match the
+    # offline contract (gen_certs_offline.py KEY_BITS=3072).
+    gen, _ = generator
+    ca_dir, leaf_dir = generate_all(gen, tmp_path)
+    assert load_cert(os.path.join(ca_dir, "ca.cer")).public_key().key_size >= 3072
+    key = load_key_from_file(os.path.join(leaf_dir, "server_key.pem"),
+                             os.path.join(leaf_dir, "cert_pwd"))
+    assert key.key_size >= 3072
+
+
 def test_trust_cer_is_a_copy_of_the_ca(generator, tmp_path):
     gen, _ = generator
     ca_dir, leaf_dir = generate_all(gen, tmp_path)
