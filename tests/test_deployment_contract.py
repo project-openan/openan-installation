@@ -78,11 +78,12 @@ def test_database_and_protocol_matrix(protocol, db):
         assert deployment["securityContext"]["fsGroup"] == 10001
         container = deployment["containers"][0]
         # RC probes are httpGet (field fix: exec cold-started ~13s on ARM64);
-        # OC keeps its exec healthcheck.
+        # OC probes are tcpSocket (no unauthenticated HTTP endpoint, and the
+        # exec healthcheck cold-starts the same Python process).
         if component == "registry-center":
             assert "httpGet" in container["readinessProbe"]
         else:
-            assert "exec" in container["readinessProbe"]
+            assert "tcpSocket" in container["readinessProbe"]
         assert container["envFrom"][1]["secretRef"]["name"] in {"rc-runtime", "oc-runtime"}
         assert any(m["subPath"] == "models.yaml" for m in container["volumeMounts"] if "subPath" in m)
     assert docs["orchestration-center-config"]["data"]["AGENT_REGISTRY_URL"].startswith(protocol + "://")
@@ -217,10 +218,21 @@ def test_registry_probes_are_http_get_with_tls_aware_scheme():
     container = https["registry-center"]["spec"]["template"]["spec"]["containers"][0]
     for probe in ("livenessProbe", "readinessProbe"):
         assert container[probe]["httpGet"]["scheme"] == "HTTPS"
-    # OC keeps its exec healthcheck (measured ~1.4s; the authenticated
-    # healthcheck carries the probe client certificate for mTLS).
+    # OC probes are tcpSocket on the named service port (no unauthenticated
+    # HTTP endpoint; exec probes cold-start a fresh Python process per
+    # kubelet check — the same crash-loop class as the RC field failure).
+    # The named port follows orchestration.port.
     oc = docs["orchestration-center"]["spec"]["template"]["spec"]["containers"][0]
-    assert "exec" in oc["livenessProbe"]
+    oc_ports = {p["name"]: p["containerPort"] for p in oc["ports"]}
+    assert oc_ports == {"http": 5001}
+    for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
+        assert oc[probe]["tcpSocket"]["port"] == "http"
+    moved_oc = render({"orchestration.port": 5501})
+    oc = moved_oc["orchestration-center"]["spec"]["template"]["spec"]["containers"][0]
+    assert oc["ports"] == [{"containerPort": 5501, "name": "http"}]
+    for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
+        assert oc[probe]["tcpSocket"]["port"] == "http"
+    assert moved_oc["orchestration-center-config"]["data"]["ORCH_PORT"] == "5501"
 
 
 @pytest.mark.parametrize("invalid,message", [

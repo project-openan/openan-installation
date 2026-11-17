@@ -320,23 +320,25 @@ orchestration:
     maxReplicas: 10
     targetCPUUtilization: 70
     targetMemoryUtilization: 80
-  # Probes
+  # Probes: OC has no unauthenticated health endpoint (all routes return 401
+  # without a session); a listening TCP socket is the available liveness
+  # signal — zero process spawn (exec probes cold-start a fresh Python
+  # process per kubelet check and crash-loop healthy pods on constrained
+  # nodes). The named port follows orchestration.port.
   livenessProbe:
     tcpSocket:
-      port: 5001
+      port: http          # named port: follows orchestration.port
     initialDelaySeconds: 40
     periodSeconds: 30
   readinessProbe:
     tcpSocket:
-      port: 5001
+      port: http
     initialDelaySeconds: 10
     periodSeconds: 10
-  # No unauthenticated health endpoint exists (all routes return 401 without
-  # a session); a listening TCP socket is the available liveness signal.
   startupProbe:
     tcpSocket:
-      port: 5001
-    failureThreshold: 12
+      port: http
+    failureThreshold: 24
     periodSeconds: 10
 
 # =============================================================================

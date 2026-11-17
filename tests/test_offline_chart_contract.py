@@ -430,6 +430,26 @@ def test_external_type_requires_port_and_secret():
     assert "database.existingSecret" in error
 
 
+def test_oc_probes_are_tcp_socket_on_the_named_port():
+    # OC has no unauthenticated HTTP endpoint (all routes return 401), so
+    # the liveness signal is the TCP listener; every kubelet exec probe
+    # would cold-start a fresh Python process and crash-loop healthy pods on
+    # constrained nodes (field regression on the online line). All three
+    # probes target the NAMED service port: orchestration.port changes flow
+    # into the probes without any probe edit.
+    docs = render()
+    oc = docs["Deployment/orchestration-center"]["spec"]["template"]["spec"]["containers"][0]
+    assert oc["ports"] == [{"containerPort": 5001, "name": "http"}]
+    for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
+        assert oc[probe]["tcpSocket"]["port"] == "http"
+        assert "exec" not in oc[probe] and "httpGet" not in oc[probe]
+    moved = render({"orchestration.port": 5501})
+    oc = moved["Deployment/orchestration-center"]["spec"]["template"]["spec"]["containers"][0]
+    assert oc["ports"] == [{"containerPort": 5501, "name": "http"}]
+    assert oc["startupProbe"]["tcpSocket"]["port"] == "http"
+    assert moved["ConfigMap/orchestration-center-config"]["data"]["ORCH_PORT"] == "5501"
+
+
 def test_bundled_mysql_renders_from_descriptor():
     # The generic database/statefulset.yaml renders the mysql descriptor:
     # same workload names, env, probes and init script as the historical

@@ -67,6 +67,7 @@ spec:
             drop: ["ALL"]
         ports:
         - containerPort: {{ $c.port }}
+          name: http
         envFrom:
         - configMapRef:
             name: orchestration-center-config
