@@ -529,6 +529,31 @@ def test_bundled_database_custom_port_is_used_by_server_probe_and_services():
     assert docs["orchestration-center-config"]["data"]["DB_PORT"] == "5544"
 
 
+def test_signature_validation_is_a_chart_value():
+    # The validator switch (REGISTRY_SIGNATURE_VALIDATION_ENABLED) renders
+    # from registry.signatureValidationEnabled — the same contract as the
+    # offline chart. It is independent of signing.mode, which controls the
+    # signer only.
+    docs = render()
+    data = docs["registry-center-config"]["data"]
+    assert data["REGISTRY_SIGNATURE_VALIDATION_ENABLED"] == "false"
+    assert data["REGISTRY_REGISTRY_SIGN_ENABLED"] == "false"  # BASE signing.mode=off
+    # The two switches are independent: the signer can be on while the
+    # validator is off (charts that sign their own cards but accept
+    # unsigned ones), and vice versa.
+    both = render({"registry.signing.mode": "auto",
+                   "registry.signatureValidationEnabled": True})
+    data = both["registry-center-config"]["data"]
+    assert data["REGISTRY_REGISTRY_SIGN_ENABLED"] == "true"
+    assert data["REGISTRY_SIGNATURE_VALIDATION_ENABLED"] == "true"
+    enabled = render({"registry.signatureValidationEnabled": True})
+    assert enabled["registry-center-config"]["data"]["REGISTRY_SIGNATURE_VALIDATION_ENABLED"] == "true"
+    # The managed env is protected from extraEnv overrides like every other
+    # chart-rendered setting.
+    assert "duplicates managed setting" in render(
+        {"registry.extraEnv.REGISTRY_SIGNATURE_VALIDATION_ENABLED": "true"}, success=False)
+
+
 def test_external_sql_storage_class_fallback_renders():
     # External SQL on a cluster without a default StorageClass still needs
     # the shared openan-local class for the rc/oc runtime PVs. Regression:

@@ -18,6 +18,7 @@ data:
   REGISTRY_INTEGRATION_AUTH_MODE: {{ .Values.registry.authMode | quote }}
   REGISTRY_REGISTRY_PUBLIC_BASE_URL: {{ .Values.registry.publicBaseUrl | quote }}
   REGISTRY_REGISTRY_SIGN_ENABLED: {{ ne .Values.registry.signing.mode "off" | quote }}
+  REGISTRY_SIGNATURE_VALIDATION_ENABLED: {{ .Values.registry.signatureValidationEnabled | quote }}
   PERSISTENCE_MODE: {{ .Values.database.type | quote }}
   DB_HOST: {{ include "openan.databaseHost" . | quote }}
   DB_PORT: {{ include "openan.databasePort" . | quote }}

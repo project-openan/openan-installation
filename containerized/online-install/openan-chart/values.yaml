@@ -216,6 +216,12 @@ registry:
   signing:
     mode: auto
     existingSecret: ""  # sign.cer, sign_key.pem, cert_pwd
+  # Validate JWS signatures on incoming AgentCards (server.conf
+  # signature_validation_enabled, via the
+  # REGISTRY_SIGNATURE_VALIDATION_ENABLED environment variable — the same
+  # contract as the offline chart). Controls the validator; signing.mode
+  # above controls the signer.
+  signatureValidationEnabled: false
   # Resource limits
   resources:
     requests:
