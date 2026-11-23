@@ -170,10 +170,18 @@ location ^~ {prefix} {{
       try_files $uri =404;
       add_header Cache-Control "public, max-age=31536000, immutable";
       add_header X-Content-Type-Options nosniff always;
+      add_header X-Frame-Options SAMEORIGIN always;
+      add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
     location = /index.html {
       add_header Cache-Control "no-store";
       add_header X-Content-Type-Options nosniff always;
+      add_header X-Frame-Options SAMEORIGIN always;
+      add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
 """
         entry = "location / { try_files $uri $uri/ /index.html; }"
@@ -198,7 +206,13 @@ http {{
     gzip on;
     gzip_vary on;
     gzip_types text/css application/javascript image/svg+xml;
+    # Security response headers (issue #55); add_header is not inherited into
+    # locations that set their own headers — statics below repeat the set.
     add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     {''.join(blocks)}
 {statics}    # X-XSS-Protection intentionally omitted: deprecated legacy filter.
     {entry}

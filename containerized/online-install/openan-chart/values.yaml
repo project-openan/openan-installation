@@ -452,3 +452,14 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # Security response headers applied uniformly at the entry (issue #55):
+    # backend-emitted duplicates are hidden first so the entry is the single
+    # source of truth for every line (portal, workflow-designer, API paths).
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_hide_header X-Frame-Options;
+      proxy_hide_header X-Content-Type-Options;
+      more_set_headers "Content-Security-Policy: default-src 'self'; frame-ancestors 'self';";
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()";

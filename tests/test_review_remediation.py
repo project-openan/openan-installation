@@ -952,6 +952,16 @@ def test_issue40_binary_one_click_registry_url_retry():
     assert "ask_with_retry" in text
 
 
+def test_binary_nginx_entry_security_headers():
+    # Issue #55: the binary lines' system nginx entry emits the standard
+    # security response header set on every response.
+    for script in ("binary/one-click/install.sh", "binary/offline-install/install.sh"):
+        text = (ROOT / script).read_text(encoding="utf-8")
+        for header in ("Content-Security-Policy", "X-Frame-Options",
+                       "X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy"):
+            assert header in text, f"{script} nginx entry missing {header}"
+
+
 def test_issue40_validate_ingress_host_contract():
     # Bare IP and DNS names are BOTH accepted (commit 4d518ea contract);
     # only whitespace / scheme / invalid chars fail.

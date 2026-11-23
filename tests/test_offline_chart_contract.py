@@ -436,6 +436,35 @@ def test_external_type_requires_port_and_secret():
     assert "database.existingSecret" in error
 
 
+SECURITY_HEADERS = ("Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options",
+                    "Referrer-Policy", "Permissions-Policy")
+
+
+def test_web_entry_security_headers_render():
+    # Issue #55: the platform web entry served only HSTS; the standard
+    # security response headers are now applied at the entry layer on every
+    # line — ingress (the measured surface) and the entry nginx configs
+    # (designer chart nginx, compose, binary system nginx).
+    docs = render()
+    # All three Ingresses inject the full header set via the annotation.
+    for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
+        snippet = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/configuration-snippet"]
+        for header in SECURITY_HEADERS:
+            assert header in snippet, f"{name} snippet missing {header}"
+        # The entry is the single source of truth: backend duplicates are hidden.
+        assert "proxy_hide_header X-Frame-Options" in snippet
+    # The designer entry nginx emits the full set at the server level
+    # (the chart's default frontend is portal — the designer nginx config
+    # only renders for frontend.type=workflow-designer).
+    designer = render({"frontend.type": "workflow-designer"})
+    conf = designer["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
+    for header in SECURITY_HEADERS:
+        assert header in conf
+    # Locations that set their own add_header repeat the set (nginx
+    # inheritance breaks there): the cached-assets location carries it too.
+    assert conf.count("Permissions-Policy") >= 2
+
+
 def test_no_default_database_password():
     # Issue #56 (CWE-798): the chart shipped a hardcoded default database
     # password effective on direct helm install. The default is empty now
