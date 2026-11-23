@@ -18,6 +18,8 @@
 {{- if not $backend.dataVolume }}{{ fail (printf "database.backends.%s.dataVolume is required" $type) }}{{ end }}
 {{- if not (hasKey $backend "readinessProbe") }}{{ fail (printf "database.backends.%s.readinessProbe is required" $type) }}{{ end }}
 {{- if not (hasKey $backend "livenessProbe") }}{{ fail (printf "database.backends.%s.livenessProbe is required" $type) }}{{ end }}
+{{- if eq .Values.database.password "openan-db-password" }}{{ fail "database.password is the known default 'openan-db-password' — set a real password or use database.existingSecret (CWE-798)" }}{{ end }}
+{{- if and (not .Values.database.existingSecret) (not .Values.database.password) }}{{ fail "bundled database requires database.existingSecret or an explicit database.password (no default; installer-managed deployments reference openan-db-credentials)" }}{{ end }}
 {{- else }}
 {{- $bundled := keys .Values.database.backends | sortAlpha | join ", " }}
 {{- if not .Values.database.host }}{{ fail (printf "database.type '%s' is not a bundled backend (bundled: %s); set database.host for an external database" $type $bundled) }}{{ end }}
