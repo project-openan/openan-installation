@@ -81,7 +81,7 @@ helm upgrade --install openan ./openan-chart -n openan --create-namespace
 
 # Command-line overrides
 helm upgrade --install openan ./openan-chart -n openan --create-namespace \
-  --set postgresql.password=your-password \
+  --set database.password=your-password \
   --set registry.llm.chat.apiKey=sk-xxx \
   --set orchestration.llm.chat.apiKey=sk-yyy
 
@@ -155,7 +155,7 @@ kubectl -n openan port-forward svc/openan-frontend 8080:80
 | `postgresql.enabled` | Enable built-in PostgreSQL | `true` |
 | `postgresql.externalHost` | External database address | `""` |
 | `postgresql.port` | Database port | `5432` |
-| `postgresql.password` | Database password | `openan-db-password` |
+| `postgresql.password` | Database password | required (no default) |
 | `postgresql.existingSecret` | Reference existing Secret for password | `""` |
 | `postgresql.storage.size` | Storage size | `20Gi` |
 | `postgresql.storage.storageClassName` | StorageClass name (auto-detect if empty) | `""` |
@@ -175,7 +175,7 @@ kubectl -n openan port-forward svc/openan-frontend 8080:80
 | `mysql.enabled` | Enable built-in MySQL | `false` |
 | `mysql.externalHost` | External database address | `""` |
 | `mysql.port` | Database port | `3306` |
-| `mysql.password` | Root password | `openan-db-password` |
+| `mysql.password` | Root password | required (no default) |
 | `mysql.existingSecret` | Reference existing Secret for password | `""` |
 | `mysql.image` | MySQL image | `mysql:8.4.3` |
 | `mysql.storage.size` | Storage size | `20Gi` |
@@ -302,19 +302,19 @@ helm upgrade --install openan ./openan-chart -n openan --create-namespace \
 
 ```bash
 helm upgrade --install openan ./openan-chart -n openan --create-namespace \
-  --set postgresql.enabled=false \
-  --set postgresql.externalHost=db.example.com \
-  --set postgresql.password=your-password
+  --set database.type=gauss \
+  --set database.host=db.example.com \
+  --set database.port=5432 \
+  --set database.existingSecret=external-db-credentials \
+  --set database.passwordKey=password
 ```
 
-### MySQL Backend
+### MySQL Backend (bundled)
 
 ```bash
 helm upgrade --install openan ./openan-chart -n openan --create-namespace \
   --set database.type=mysql \
-  --set mysql.enabled=true \
-  --set postgresql.enabled=false \
-  --set mysql.password=your-password
+  --set database.existingSecret=openan-db-credentials
 ```
 
 ## Common Operations

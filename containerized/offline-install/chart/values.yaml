@@ -32,7 +32,7 @@ database:
   # Keys follow the backend descriptor (postgres-password /
   # mysql-root-password); external types read database.passwordKey.
   existingSecret: ""
-  password: "openan-db-password"  # inline fallback (evaluation only)
+  password: ""                   # inline fallback; required when existingSecret is unset
   passwordKey: password           # existingSecret key for external types
   # Bundled-database storage (operator choices; per-backend pvName/hostPath
   # defaults live in the backend descriptors).

@@ -15,7 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 HELM = os.environ.get("HELM_BIN") or shutil.which("helm")
 CHART = ROOT / "containerized/offline-install/chart"
 BASE = {"registry.image.tag": "contract", "orchestration.image.tag": "contract",
-        "frontend.image.tag": "contract"}
+        "frontend.image.tag": "contract",
+        # The installer always references its credential Secret; pure-Helm
+        # deployments must provide it (or an explicit password) — the
+        # hardcoded-default removal (issue #56) makes this required.
+        "database.existingSecret": "openan-db-credentials"}
 
 
 def render(settings=None, success=True):
@@ -425,9 +429,29 @@ def test_external_type_requires_port_and_secret():
     error = render({"database.type": "gauss", "database.host": "gauss.internal",
                     "database.existingSecret": "db-cred"}, success=False)
     assert "set database.port" in error
+    # Clear the BASE credential: the external path must demand its own
+    # existingSecret (the BASE installs the installer's bundled Secret).
     error = render({"database.type": "gauss", "database.host": "gauss.internal",
-                    "database.port": 5432}, success=False)
+                    "database.port": 5432, "database.existingSecret": ""}, success=False)
     assert "database.existingSecret" in error
+
+
+def test_no_default_database_password():
+    # Issue #56 (CWE-798): the chart shipped a hardcoded default database
+    # password effective on direct helm install. The default is empty now
+    # and validation fails without a credential; the known-default string
+    # itself is rejected even when set explicitly.
+    error = render({"database.existingSecret": ""}, success=False)
+    assert "requires database.existingSecret or an explicit database.password" in error
+    error = render({"database.existingSecret": "",
+                    "database.password": "openan-db-password"}, success=False)
+    assert "known default" in error
+    # Explicit password or the installer's Secret both render cleanly.
+    docs = render({"database.existingSecret": "",
+                   "database.password": "operator-set-secret"})
+    env = {e["name"]: e for e in
+           docs["StatefulSet/openan-postgres"]["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["POSTGRES_PASSWORD"]["value"] == "operator-set-secret"
 
 
 def test_oc_probes_are_tcp_socket_on_the_named_port():
