@@ -1399,6 +1399,13 @@ server {
     ssl_certificate /etc/nginx/ssl/cert.pem;
     ssl_certificate_key /etc/nginx/ssl/key.pem;
 
+    # Security response headers (issue #55), applied to every response.
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+
     # Frontend (static files served from /var/www/openan, see ADR-014)
     location / {
         root /var/www/openan;

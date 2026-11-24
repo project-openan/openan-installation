@@ -192,6 +192,21 @@ def deployment(tmp_path):
 
 
 @pytest.mark.parametrize("frontend", ["portal", "workflow-designer"])
+def test_compose_entry_nginx_security_headers(deployment, frontend):
+    # Issue #55: the compose entry nginx emits the standard security header
+    # set at the server level; the add_header-heavy static locations repeat
+    # it (nginx inheritance breaks there).
+    _, _, _, generate = deployment
+    compose, nginx = generate({"FRONTEND_TYPE": frontend})
+    conf = nginx if isinstance(nginx, str) else nginx["content"]
+    for header in ("Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options",
+                   "Referrer-Policy", "Permissions-Policy"):
+        assert header in conf, f"{frontend}: entry nginx missing {header}"
+    # The static locations repeat the set where nginx inheritance breaks.
+    assert conf.count("Permissions-Policy") >= (1 if frontend == "portal" else 3)
+
+
+@pytest.mark.parametrize("frontend", ["portal", "workflow-designer"])
 @pytest.mark.parametrize("db", ["mysql", "postgresql"])
 @pytest.mark.parametrize("public_https", ["false", "true"])
 @pytest.mark.parametrize("rc_https,oc_https", [("false", "false"), ("true", "true"), ("false", "true"), ("true", "false")])

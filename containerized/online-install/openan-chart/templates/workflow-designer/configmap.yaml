@@ -21,6 +21,9 @@ data:
         gzip_types text/css application/javascript image/svg+xml;
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
+        add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
         {{- range $location := list "/api/orchestrate/" "/rest/v1/orchestrate/" }}
         location {{ $location }} {
             proxy_pass {{ ternary "https" "http" $.Values.orchestration.tls.enabled }}://orchestration-center:{{ $.Values.orchestration.port }}{{ if eq $location "/api/orchestrate/" }}/{{ end }};
@@ -51,13 +54,21 @@ data:
         location ~ "^/assets/[^/]+-[A-Za-z0-9_-]{8,}\\.(js|css|svg|png|jpg|woff2)$" {
             try_files $uri =404;
             add_header Cache-Control "public, max-age=31536000, immutable";
+            # add_header is not inherited once a location sets its own: repeat
+            # the full security set here (same as the server block).
             add_header X-Content-Type-Options nosniff always;
             add_header X-Frame-Options SAMEORIGIN always;
+            add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
         }
         location = /index.html {
             add_header Cache-Control "no-store";
             add_header X-Content-Type-Options nosniff always;
             add_header X-Frame-Options SAMEORIGIN always;
+            add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'self'" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
         }
         # X-XSS-Protection intentionally omitted: deprecated browser filter, not a modern defense.
         location / { try_files $uri $uri/ /index.html; }

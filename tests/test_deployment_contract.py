@@ -529,6 +529,29 @@ def test_bundled_database_custom_port_is_used_by_server_probe_and_services():
     assert docs["orchestration-center-config"]["data"]["DB_PORT"] == "5544"
 
 
+SECURITY_HEADERS = ("Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options",
+                    "Referrer-Policy", "Permissions-Policy")
+
+
+def test_web_entry_security_headers_render():
+    # Issue #55: the entry responses now carry the standard security header
+    # set — injected at the ingress layer (the measured surface) for every
+    # line (portal, workflow-designer, API paths), with backend duplicates
+    # hidden so the entry is the single source of truth.
+    docs = render()
+    for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
+        snippet = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/configuration-snippet"]
+        for header in SECURITY_HEADERS:
+            assert header in snippet, f"{name} snippet missing {header}"
+        assert "proxy_hide_header X-Frame-Options" in snippet
+    # The designer entry nginx emits the full set (server level + the
+    # add_header-heavy locations, where nginx inheritance breaks).
+    conf = docs["openan-frontend-nginx-config"]["data"]["default.conf"]
+    for header in SECURITY_HEADERS:
+        assert header in conf
+    assert conf.count("Permissions-Policy") >= 3  # server + assets + index
+
+
 def test_signature_validation_is_a_chart_value():
     # The validator switch (REGISTRY_SIGNATURE_VALIDATION_ENABLED) renders
     # from registry.signatureValidationEnabled — the same contract as the
