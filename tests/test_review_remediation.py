@@ -536,6 +536,36 @@ def test_wizard_in_cluster_default_values_shape(tmp_path, monkeypatch):
     assert "PgSecret123!" not in text
 
 
+def test_wizard_registry_only_completes_and_disables_frontend(tmp_path, monkeypatch):
+    # Issue #62: registry-only crashed with KeyError: 'frontend' after all
+    # Secrets were created — the frontend tag is only assigned inside the
+    # orchestration guard, and the values assembly read it unconditionally.
+    # Registry-only must complete and emit frontend/orchestration disabled.
+    module = wizard()
+    _mock_wizard(
+        monkeypatch, module,
+        asks=["v1.0.0"],
+        chooses=["registry", "in-cluster", "postgresql", "skip", "auto", "no"],
+        secrets=["PgSecret123!", "AdminPass123!xy"],
+    )
+    saved = {}
+    monkeypatch.setattr(module, "create_secret", lambda ns, name, data: saved.update({name: data}))
+    monkeypatch.setattr(module, "create_configmap", lambda *args: None)
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 0, "", ""))
+    monkeypatch.setattr(module, "first_node", lambda: None)
+    monkeypatch.setattr(module, "has_default_storageclass", lambda: True)
+    output = tmp_path / "values.json"
+    module.configure("openan", "openan", output)
+    values = json.loads(output.read_text(encoding="utf-8"))
+    assert values["registry"]["image"]["tag"] == "v1.0.0"
+    assert values["orchestration"] == {"enabled": False}
+    assert values["frontend"] == {"enabled": False, "image": {"tag": ""}}
+    # Registry-only creates no orchestration runtime Secret; the shared
+    # database credential is still wired.
+    assert "openan-oc-runtime" not in saved
+    assert "openan-pg" in saved
+
+
 def test_wizard_backend_menu_follows_chart_data():
     # The wizard's bundled menu is data-driven from the chart's
     # database.backends descriptor (issue #36): adding a chart backend

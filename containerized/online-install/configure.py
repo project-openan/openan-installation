@@ -696,7 +696,11 @@ def configure(namespace, release, output, tag=None):
         }
 
     # --- Assemble non-secret values -------------------------------------------
-    frontend_values = {"image": {"tag": tags["frontend"]}}
+    # Registry-only deploys no frontend: the frontend tag is only assigned
+    # inside the orchestration guard (Step 2) and is meaningless when the
+    # frontend is disabled — read it with a default so the values assembly
+    # never depends on which components were selected (issue #62).
+    frontend_values = {"image": {"tag": tags.get("frontend", "")}}
     if components["orchestration"]:
         frontend_values["type"] = frontend_type or "workflow-designer"
     if https_enabled == "yes":
@@ -759,7 +763,7 @@ def configure(namespace, release, output, tag=None):
                 "useHostPath": True, "nodeName": storage_node}
     else:
         values["orchestration"] = {"enabled": False}
-        values["frontend"] = {"enabled": False, "image": {"tag": tags["frontend"]}}
+        values["frontend"] = {"enabled": False, "image": {"tag": tags.get("frontend", "")}}
     # The external entry follows the discovered address: HTTPS writes the
     # ingress-nginx entry IP as the Ingress host (SAN IP in the certificate,
     # catch-all rule in the chart — Kubernetes rejects bare IPs in rules[]);
