@@ -534,18 +534,26 @@ SECURITY_HEADERS = ("Content-Security-Policy", "X-Frame-Options", "X-Content-Typ
 
 
 def test_web_entry_security_headers_render():
-    # Issue #55: the entry responses now carry the standard security header
-    # set — injected at the ingress layer (the measured surface) for every
-    # line (portal, workflow-designer, API paths), with backend duplicates
-    # hidden so the entry is the single source of truth.
+    # The Ingresses carry no response-header injection. Both ingress-nginx
+    # mechanisms depend on cluster-wide controller settings that the chart
+    # does not control: configuration-snippet is denied at admission unless
+    # allow-snippet-annotations is on, and custom-headers is ignored (every
+    # route answers 503) unless each header is allow-listed in
+    # global-allowed-response-headers.
     docs = render()
     for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
-        snippet = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/configuration-snippet"]
-        for header in SECURITY_HEADERS:
-            assert header in snippet, f"{name} snippet missing {header}"
-        assert "proxy_hide_header X-Frame-Options" in snippet
-    # The designer entry nginx emits the full set (server level + the
-    # add_header-heavy locations, where nginx inheritance breaks).
+        annotations = docs["Ingress/" + name]["metadata"]["annotations"]
+        assert "nginx.ingress.kubernetes.io/configuration-snippet" not in annotations, (
+            f"{name} carries a configuration-snippet annotation"
+        )
+        assert "nginx.ingress.kubernetes.io/custom-headers" not in annotations, (
+            f"{name} carries a custom-headers annotation"
+        )
+        assert annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "300"
+    assert not [k for k in docs if k.endswith("-custom-headers")], "a custom-headers ConfigMap is rendered"
+    # The designer entry nginx (the chart's fallback ConfigMap) emits the full
+    # set at server level and inside the add_header-heavy locations, where
+    # nginx inheritance breaks.
     conf = docs["openan-frontend-nginx-config"]["data"]["default.conf"]
     for header in SECURITY_HEADERS:
         assert header in conf

@@ -441,21 +441,26 @@ SECURITY_HEADERS = ("Content-Security-Policy", "X-Frame-Options", "X-Content-Typ
 
 
 def test_web_entry_security_headers_render():
-    # Issue #55: the platform web entry served only HSTS; the standard
-    # security response headers are now applied at the entry layer on every
-    # line — ingress (the measured surface) and the entry nginx configs
-    # (designer chart nginx, compose, binary system nginx).
+    # The Ingresses carry no response-header injection. Both ingress-nginx
+    # mechanisms depend on cluster-wide controller settings that the chart
+    # does not control: configuration-snippet is denied at admission unless
+    # allow-snippet-annotations is on, and custom-headers is ignored (every
+    # route answers 503) unless each header is allow-listed in
+    # global-allowed-response-headers.
     docs = render()
-    # All three Ingresses inject the full header set via the annotation.
     for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
-        snippet = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/configuration-snippet"]
-        for header in SECURITY_HEADERS:
-            assert header in snippet, f"{name} snippet missing {header}"
-        # The entry is the single source of truth: backend duplicates are hidden.
-        assert "proxy_hide_header X-Frame-Options" in snippet
-    # The designer entry nginx emits the full set at the server level
-    # (the chart's default frontend is portal — the designer nginx config
-    # only renders for frontend.type=workflow-designer).
+        annotations = docs["Ingress/" + name]["metadata"]["annotations"]
+        assert "nginx.ingress.kubernetes.io/configuration-snippet" not in annotations, (
+            f"{name} carries a configuration-snippet annotation"
+        )
+        assert "nginx.ingress.kubernetes.io/custom-headers" not in annotations, (
+            f"{name} carries a custom-headers annotation"
+        )
+        assert annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "300"
+    assert not [k for k in docs if k.endswith("-custom-headers")], "a custom-headers ConfigMap is rendered"
+    # The designer entry nginx emits the full set at the server level (the
+    # chart's default frontend is portal — the designer nginx config only
+    # renders for frontend.type=workflow-designer).
     designer = render({"frontend.type": "workflow-designer"})
     conf = designer["ConfigMap/openan-frontend-nginx-config"]["data"]["default.conf"]
     for header in SECURITY_HEADERS:
