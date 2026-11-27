@@ -1001,9 +1001,10 @@ def test_binary_latest_resolution_works():
                 echo "$tag"
             fi
         }
-        # Mock curl: success with a tag, then unreachable
+        # Mock curl: success with a tag, then unreachable.
+        # curl -fsSL "$url" → $1=-fsSL $2=$url (no $3).
         curl() {
-            case "$3" in
+            case "$2" in
                 *ok-repo*) printf '"tag_name": "v9.9.9"' ;;
                 *) return 7 ;;
             esac
