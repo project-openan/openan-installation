@@ -520,28 +520,4 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-  # Security response headers (issue #55) — injected via the ingress-nginx
-  # custom-headers ConfigMap referenced from every Ingress. Unlike the
-  # configuration-snippet annotation, custom-headers is honoured by hardened
-  # ingress-nginx deployments (allow-snippet-annotations=false, the default
-  # since v1.9), so helm install succeeds without weakening the controller.
-  # The chart renders the ConfigMap in the controller namespace (the
-  # controller only reads custom-headers ConfigMaps from its own namespace).
-  customHeaders:
-    # Render the ConfigMap and reference it from all three Ingresses.
-    create: true
-    # Namespace of the target ingress-nginx controller (ConfigMaps are only
-    # visible to a controller in the same namespace). Empty -> the release
-    # namespace (works when ingress-nginx is co-located with openan; a
-    # dedicated controller in another namespace must be named explicitly).
-    controllerNamespace: ""
-    # Name of an existing custom-headers ConfigMap to reference instead of
-    # rendering a new one (leave empty to use the chart-rendered ConfigMap).
-    existingConfigMap: ""
-    # Header values (empty string disables that header).
-    contentSecurityPolicy: "default-src 'self'; frame-ancestors 'self'"
-    xFrameOptions: "SAMEORIGIN"
-    xContentTypeOptions: "nosniff"
-    referrerPolicy: "strict-origin-when-cross-origin"
-    permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
 
