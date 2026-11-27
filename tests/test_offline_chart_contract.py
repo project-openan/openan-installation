@@ -443,16 +443,31 @@ SECURITY_HEADERS = ("Content-Security-Policy", "X-Frame-Options", "X-Content-Typ
 def test_web_entry_security_headers_render():
     # Issue #55: the platform web entry served only HSTS; the standard
     # security response headers are now applied at the entry layer on every
-    # line — ingress (the measured surface) and the entry nginx configs
-    # (designer chart nginx, compose, binary system nginx).
+    # line — ingress (the measured surface, via the custom-headers ConfigMap)
+    # and the entry nginx configs (designer chart nginx, compose, binary
+    # system nginx). Unlike configuration-snippet, custom-headers is
+    # honoured by hardened ingress-nginx (allow-snippet-annotations=false,
+    # the default since v1.9).
     docs = render()
-    # All three Ingresses inject the full header set via the annotation.
+    # The ConfigMap name follows the release name (openan.fullname helper).
+    cm = docs["ConfigMap/contract-openan-custom-headers"]
+    # All three Ingresses reference the chart-rendered custom-headers ConfigMap.
     for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
-        snippet = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/configuration-snippet"]
-        for header in SECURITY_HEADERS:
-            assert header in snippet, f"{name} snippet missing {header}"
-        # The entry is the single source of truth: backend duplicates are hidden.
-        assert "proxy_hide_header X-Frame-Options" in snippet
+        ref = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/custom-headers"]
+        assert ref == "openan/contract-openan-custom-headers", f"{name} custom-headers ref = {ref}"
+    assert cm["metadata"]["namespace"] == "openan"
+    for header in SECURITY_HEADERS:
+        assert header in cm["data"], f"custom-headers ConfigMap missing {header}"
+    assert cm["data"]["X-Frame-Options"] == "SAMEORIGIN"
+    assert cm["data"]["X-Content-Type-Options"] == "nosniff"
+    # No configuration-snippet annotation anywhere: hardened ingress-nginx
+    # (allow-snippet-annotations=false) rejects the resource at admission
+    # time and helm install fails outright.
+    for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
+        annotations = docs["Ingress/" + name]["metadata"]["annotations"]
+        assert "nginx.ingress.kubernetes.io/configuration-snippet" not in annotations, (
+            f"{name} still carries a configuration-snippet annotation"
+        )
     # The designer entry nginx emits the full set at the server level
     # (the chart's default frontend is portal — the designer nginx config
     # only renders for frontend.type=workflow-designer).
@@ -463,6 +478,27 @@ def test_web_entry_security_headers_render():
     # Locations that set their own add_header repeat the set (nginx
     # inheritance breaks there): the cached-assets location carries it too.
     assert conf.count("Permissions-Policy") >= 2
+
+
+def test_custom_headers_respects_existing_configmap():
+    # Operators who already manage a custom-headers ConfigMap (e.g. shared
+    # controller, cluster-wide policy) can point the Ingresses at it; the
+    # chart then renders no ConfigMap of its own.
+    docs = render({"ingress.customHeaders.existingConfigMap": "cluster-wide-headers",
+                   "ingress.customHeaders.controllerNamespace": "ingress-nginx"})
+    for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
+        ref = docs["Ingress/" + name]["metadata"]["annotations"]["nginx.ingress.kubernetes.io/custom-headers"]
+        assert ref == "ingress-nginx/cluster-wide-headers"
+    assert "ConfigMap/contract-openan-custom-headers" not in docs
+
+
+def test_custom_headers_disabled_renders_no_reference():
+    # securityHeaders opt-out: neither the ConfigMap nor the annotation.
+    docs = render({"ingress.customHeaders.create": False})
+    assert "ConfigMap/contract-openan-custom-headers" not in docs
+    for name in ("openan-frontend-ingress", "openan-orchestration-ingress", "openan-registry-ingress"):
+        annotations = docs["Ingress/" + name]["metadata"]["annotations"]
+        assert "nginx.ingress.kubernetes.io/custom-headers" not in annotations
 
 
 def test_no_default_database_password():

@@ -71,6 +71,27 @@ app: orchestration-center
 {{- end }}
 
 {{/*
+Security-headers ConfigMap name. References the operator-provided ConfigMap
+when ingress.customHeaders.existingConfigMap is set, otherwise the
+chart-rendered one.
+*/}}
+{{- define "openan.customHeadersName" -}}
+{{- if .Values.ingress.customHeaders.existingConfigMap -}}
+{{- .Values.ingress.customHeaders.existingConfigMap -}}
+{{- else -}}
+{{- printf "%s-custom-headers" (include "openan.fullname" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Security-headers ConfigMap namespace — must be the ingress-nginx controller's
+namespace for the controller to pick it up.
+*/}}
+{{- define "openan.customHeadersNamespace" -}}
+{{- default .Values.namespace .Values.ingress.customHeaders.controllerNamespace -}}
+{{- end }}
+
+{{/*
 Bundled-database labels (rendered for the active backend only). Label
 values are identical to the historical postgres labels, so selectors stay
 stable across upgrades.

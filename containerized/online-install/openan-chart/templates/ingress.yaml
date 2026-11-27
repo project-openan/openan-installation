@@ -2,6 +2,12 @@
 # All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+{{- define "openan.ingressAnnotations" -}}
+{{- if or .Values.ingress.customHeaders.create .Values.ingress.customHeaders.existingConfigMap }}
+nginx.ingress.kubernetes.io/custom-headers: {{ printf "%s/%s" (include "openan.customHeadersNamespace" .) (include "openan.customHeadersName" .) | quote }}
+{{- end }}
+{{- end -}}
+
 {{- if and .Values.ingress.enabled .Values.frontend.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -12,6 +18,7 @@ metadata:
     {{- include "openan.labels" . | nindent 4 }}
     app.kubernetes.io/component: frontend
   annotations:
+    {{- include "openan.ingressAnnotations" . | nindent 4 }}
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
@@ -64,6 +71,7 @@ metadata:
     {{- if and .Values.orchestration.tls.enabled (or .Values.orchestration.tls.verifyClient .Values.ingress.backendVerifyServer) }}
     nginx.ingress.kubernetes.io/proxy-ssl-secret: {{ printf "%s/%s" .Values.namespace (required "orchestration mTLS ingress requires ingressClientSecret (tls.crt,tls.key,ca.crt)" .Values.orchestration.ingressClientSecret) | quote }}
     {{- end }}
+    {{- include "openan.ingressAnnotations" . | nindent 4 }}
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
@@ -118,6 +126,7 @@ metadata:
     {{- if and .Values.registry.tls.enabled (or .Values.registry.tls.verifyClient .Values.ingress.backendVerifyServer) }}
     nginx.ingress.kubernetes.io/proxy-ssl-secret: {{ printf "%s/%s" .Values.namespace (required "registry mTLS ingress requires ingressClientSecret (tls.crt,tls.key,ca.crt)" .Values.registry.ingressClientSecret) | quote }}
     {{- end }}
+    {{- include "openan.ingressAnnotations" . | nindent 4 }}
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
