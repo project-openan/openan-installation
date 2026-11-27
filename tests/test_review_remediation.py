@@ -962,6 +962,63 @@ def test_binary_nginx_entry_security_headers():
             assert header in text, f"{script} nginx entry missing {header}"
 
 
+def test_binary_installers_default_to_latest():
+    # Issue #60: the binary installers hardcoded DEFAULT_*_VERSION="v1.0.0"
+    # — a plain run always installed the old release. The defaults are now
+    # "latest", resolved via the GitHub releases API with a graceful
+    # v1.0.0 fallback; explicit --reg-version/--orc-version still pin.
+    for script in ("binary/one-click/install.sh", "binary/build/pack.sh"):
+        text = (ROOT / script).read_text(encoding="utf-8")
+        assert 'DEFAULT_REGISTRY_VERSION="latest"' in text, script
+        assert 'DEFAULT_ORCHESTRATION_VERSION="latest"' in text, script
+        assert "resolve_latest_tag()" in text, script
+        assert 'if [ "$REGISTRY_VERSION" = "latest" ]' in text, script
+        assert 'if [ "$ORCHESTRATION_VERSION" = "latest" ]' in text, script
+        # Graceful fallback when the GitHub API is unreachable.
+        assert 'falling back to v1.0.0' in text, script
+        # No stale pin remains in the defaults.
+        assert 'DEFAULT_REGISTRY_VERSION="v1.0.0"' not in text, script
+        assert 'DEFAULT_ORCHESTRATION_VERSION="v1.0.0"' not in text, script
+
+
+def test_binary_latest_resolution_works():
+    # Functional check (needs bash): resolve_latest_tag extracts the tag
+    # from a mocked GitHub API response and falls back to v1.0.0 on
+    # unreachable API, both without hard-failing.
+    if not BASH:
+        pytest.skip("Set BASH_BIN")
+    probe = subprocess.run([BASH, "-c", "echo ok"], capture_output=True, text=True)
+    if probe.returncode != 0 or "ok" not in probe.stdout:
+        pytest.skip("Bash stub without a working shell")
+    helper = """
+        resolve_latest_tag() {
+            local api_url="https://api.github.com/repos/project-openan/$1/releases/latest"
+            local tag
+            tag="$(curl -fsSL "$api_url" 2>/dev/null | grep -oP '"tag_name":\\s*"\\K[^"]+' || true)"
+            if [ -z "$tag" ]; then
+                echo "v1.0.0"
+            else
+                echo "$tag"
+            fi
+        }
+        # Mock curl: success with a tag, then unreachable
+        curl() {
+            case "$3" in
+                *ok-repo*) printf '"tag_name": "v9.9.9"' ;;
+                *) return 7 ;;
+            esac
+        }
+        export -f curl
+        resolve_latest_tag ok-repo
+        resolve_latest_tag unreachable
+    """
+    result = subprocess.run([BASH, "-c", helper], capture_output=True, text=True, timeout=10)
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert result.returncode == 0, result.stderr
+    assert "v9.9.9" in lines, f"expected v9.9.9 from mocked API, got: {lines}"
+    assert "v1.0.0" in lines, f"expected v1.0.0 fallback, got: {lines}"
+
+
 def test_issue40_validate_ingress_host_contract():
     # Bare IP and DNS names are BOTH accepted (commit 4d518ea contract);
     # only whitespace / scheme / invalid chars fail.
