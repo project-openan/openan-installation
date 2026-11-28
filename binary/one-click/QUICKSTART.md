@@ -144,10 +144,10 @@ Downloads and extracts from GitHub Release (using `curl` + `tar`, no `git clone`
 
 Defaults (overridable via flags; precedence: flag > built-in default):
 
-| Component | Download URL | Version |
-|-----------|-------------|---------|
-| registry-center | `https://github.com/project-openan/registry-center/archive/refs/tags/v1.0.0.tar.gz` | v1.0.0 |
-| orchestration-center | `https://github.com/project-openan/orchestration-center/archive/refs/tags/v1.0.0.tar.gz` | v1.0.0 |
+| Component | Version |
+|-----------|---------|
+| registry-center | latest published release (resolved via the GitHub API at install time; falls back to v1.0.0 when unreachable) |
+| orchestration-center | latest published release (resolved via the GitHub API at install time; falls back to v1.0.0 when unreachable) |
 
 Override the tag or full URL per component (e.g. to pin a newer release or use a mirror). Version/URL flags also select their component (ADR-024):
 

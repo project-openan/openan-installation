@@ -57,10 +57,10 @@ Options:
   --orc                Install orchestration-center (default version)
                        (default: both if no component flag is specified)
   --sample             Start agents examples server (port 8080, off by default)
-  --reg-version <tag>  registry-center source tag (default: v1.0.0);
-                       also selects registry-center
-  --orc-version <tag>  orchestration-center source tag (default: v1.0.0);
-                       also selects orchestration-center
+  --reg-version <tag>  registry-center source tag (default: latest published
+                       release; also selects registry-center)
+  --orc-version <tag>  orchestration-center source tag (default: latest
+                       published release; also selects orchestration-center)
   -h, --help           Show this help message and exit
 
 Version overrides (precedence: flag > built-in default):
@@ -149,8 +149,8 @@ WORK_DIR="${SCRIPT_DIR}"
 # Precedence: flag > built-in default; the source URL is always derived from
 # the built-in GitHub base + tag (official GitHub source only, no override)
 # =============================================================================
-DEFAULT_REGISTRY_VERSION="v1.0.0"
-DEFAULT_ORCHESTRATION_VERSION="v1.0.0"
+DEFAULT_REGISTRY_VERSION="latest"
+DEFAULT_ORCHESTRATION_VERSION="latest"
 REGISTRY_SOURCE_BASE="https://github.com/project-openan/registry-center/archive/refs/tags"
 ORCHESTRATION_SOURCE_BASE="https://github.com/project-openan/orchestration-center/archive/refs/tags"
 
@@ -215,16 +215,39 @@ normalize_tag() {
     esac
 }
 
+# Resolve "latest" to the newest published release tag (issue #60).
+# Falls back to v1.0.0 with a warning when the GitHub API is unreachable
+# (the script must work offline / behind firewalls without hard-failing).
+resolve_latest_tag() {  # $1 = repo name (registry-center / orchestration-center)
+    local api_url="https://api.github.com/repos/project-openan/$1/releases/latest"
+    local tag
+    tag="$(curl -fsSL "$api_url" 2>/dev/null | grep -oP '"tag_name":\s*"\K[^"]+' || true)"
+    if [ -z "$tag" ]; then
+        echo "  [WARN] Could not resolve the latest $1 release (GitHub API unreachable); falling back to v1.0.0" >&2
+        echo "v1.0.0"
+    else
+        echo "$tag"
+    fi
+}
+
 # --- registry-center ---
 REGISTRY_VERSION_SOURCE="default"
 if [ -n "${REG_VERSION_FLAG}" ]; then REGISTRY_VERSION_SOURCE="flag"; fi
 REGISTRY_VERSION="$(normalize_tag "${REG_VERSION_FLAG:-${DEFAULT_REGISTRY_VERSION}}")"
+if [ "$REGISTRY_VERSION" = "latest" ]; then
+    REGISTRY_VERSION="$(resolve_latest_tag registry-center)"
+    REGISTRY_VERSION_SOURCE="default-latest"
+fi
 REGISTRY_SOURCE_URL="${REGISTRY_SOURCE_BASE}/${REGISTRY_VERSION}.tar.gz"
 
 # --- orchestration-center ---
 ORCHESTRATION_VERSION_SOURCE="default"
 if [ -n "${ORC_VERSION_FLAG}" ]; then ORCHESTRATION_VERSION_SOURCE="flag"; fi
 ORCHESTRATION_VERSION="$(normalize_tag "${ORC_VERSION_FLAG:-${DEFAULT_ORCHESTRATION_VERSION}}")"
+if [ "$ORCHESTRATION_VERSION" = "latest" ]; then
+    ORCHESTRATION_VERSION="$(resolve_latest_tag orchestration-center)"
+    ORCHESTRATION_VERSION_SOURCE="default-latest"
+fi
 ORCHESTRATION_SOURCE_URL="${ORCHESTRATION_SOURCE_BASE}/${ORCHESTRATION_VERSION}.tar.gz"
 
 echo "[MODE] Install targets:"
